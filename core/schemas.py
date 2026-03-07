@@ -4,11 +4,11 @@ All events extend BaseEvent and use Pydantic v2 for validation.
 Events are transmitted via Redis Pub/Sub as JSON.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal, Optional
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
 
 
 class BaseEvent(BaseModel):
@@ -18,17 +18,21 @@ class BaseEvent(BaseModel):
         ..., description="Unique ID tracking request across agents"
     )
     timestamp: datetime = Field(
-        default_factory=datetime.utcnow, description="Event creation time"
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="Event creation time",
     )
     event_type: str = Field(..., description="Event category identifier")
     source_agent: str = Field(..., description="Agent that created this event")
 
-    model_config = {
-        "json_encoders": {
-            datetime: lambda v: v.isoformat(),
-            UUID: lambda v: str(v),
-        }
-    }
+    @field_serializer("timestamp")
+    def serialize_timestamp(self, dt: datetime, _info):
+        """Serialize datetime to ISO format."""
+        return dt.isoformat()
+
+    @field_serializer("correlation_id")
+    def serialize_uuid(self, uuid_val: UUID, _info):
+        """Serialize UUID to string."""
+        return str(uuid_val)
 
 
 class TaskRequest(BaseEvent):
