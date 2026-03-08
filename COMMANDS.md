@@ -2,71 +2,131 @@
 
 ## Prerequisites
 
-- Redis must be running
-- Start Redis: `redis-server` or check Windows service
-- Verify Redis: `redis-cli ping` (should return PONG)
+- Redis must be running at `D:\Redis\`
+- Python 3.12+ with uv package manager
+- Virtual environment activated
 
 ## Setup
 
-```bash
+```powershell
 # Install dependencies
 uv sync
 
 # Create environment file
 cp .env.example .env
+# Edit .env and add your GEMINI_API_KEY
+```
+
+## Start the Application (Step-by-Step)
+
+### Step 1 - Verify Redis
+```powershell
+& "D:\Redis\redis-cli.exe" ping
+# Should return: PONG
+```
+
+### Step 2 - Start Redis Server (if not running)
+```powershell
+& "D:\Redis\redis-server.exe"
+```
+Keep this terminal open.
+
+### Step 3 - Start Utilities Agent (Terminal 2)
+```powershell
+uv run python -m agents.utilities_agent
+```
+Keep this terminal open.
+
+### Step 4 - Start Broadband Agent (Terminal 3)
+```powershell
+uv run python -m agents.broadband_agent
+```
+Keep this terminal open.
+
+### Step 5 - Start API Server (Terminal 4)
+```powershell
+uv run python -m uvicorn api.main:app --reload
+```
+
+API available at: `http://localhost:8000`
+
+## Quick Reference (All Commands)
+
+```powershell
+# Terminal 1 - Redis
+& "D:\Redis\redis-server.exe"
+
+# Terminal 2 - Utilities Agent
+uv run python -m agents.utilities_agent
+
+# Terminal 3 - Broadband Agent
+uv run python -m agents.broadband_agent
+
+# Terminal 4 - API Server
+uv run python -m uvicorn api.main:app --reload
+```
+
+## Testing with PowerShell
+
+### Submit a Task
+```powershell
+Invoke-RestMethod -Uri "http://localhost:8000/tasks" -Method POST -ContentType "application/json" -Body '{"user_input": "I need electricity, gas, and internet at 123 Main St"}'
+```
+
+### Check Task Status (replace correlation_id)
+```powershell
+Invoke-RestMethod -Uri "http://localhost:8000/tasks/YOUR_CORRELATION_ID" -Method GET
+```
+
+### Health Check
+```powershell
+Invoke-RestMethod -Uri "http://localhost:8000/health" -Method GET
+```
+
+### Get Agent Registry
+```powershell
+Invoke-RestMethod -Uri "http://localhost:8000/agents" -Method GET
 ```
 
 ## Run Tests
 
-### Day 2 - Direct Agent Communication (Core Architecture Verification)
-
-```bash
-python -m pytest tests/integration/test_direct_agent_communication.py -v -s
-```
-
-**What this proves:**
-- ✓ Utilities → Redis → Broadband (no Main Agent routing)
-- ✓ Parallel execution (0.2s, not sequential)
-- ✓ Data plane works independently of control plane
-
 ### Run All Tests
 
-```bash
-python -m pytest -v -s
+```powershell
+uv run pytest -v -s
 ```
 
 ### Run Specific Test
 
-```bash
-python -m pytest tests/integration/test_direct_agent_communication.py::test_parallel_agent_execution -v -s
+```powershell
+uv run pytest tests/integration/test_direct_agent_communication.py -v -s
 ```
 
 ### Run Unit Tests Only
 
-```bash
-python -m pytest tests/unit/ -v
+```powershell
+uv run pytest tests/unit/ -v
 ```
 
 ### Run Policy Enforcer Tests
 
-```bash
-uv run python -m pytest tests/unit/test_policy_enforcer.py -v
+```powershell
+uv run pytest tests/unit/test_policy_enforcer.py -v
 ```
 
 ### Run with Coverage
 
-```bash
-python -m pytest --cov=agents --cov=bus --cov=core --cov-report=term-missing
+```powershell
+uv run pytest --cov=agents --cov=bus --cov=core --cov-report=term-missing
 ```
 
 ## Start the Application
 
-```bash
-# Start API server
-python run.py
+See "Start the Application (Step-by-Step)" section above for detailed instructions.
 
-# Or with uvicorn directly
-uv run uvicorn api.main:app --reload
+Alternative using run.py:
+```powershell
+uv run python run.py
 ```
 
 ## Development
@@ -83,21 +143,21 @@ ruff format .
 
 ### Run Benchmark
 
-```bash
+```powershell
 # Compare centralized vs hybrid architecture performance
-python benchmark/benchmark.py
+uv run python benchmark/benchmark.py
 ```
 
-## Quick Demo for Interview
+## Quick Demo
 
-1. **Start Redis** (in separate terminal):
-   ```bash
-   redis-server
+1. **Start Redis**:
+   ```powershell
+   & "D:\Redis\redis-server.exe"
    ```
 
 2. **Run verification tests** (shows direct agent communication):
-   ```bash
-   python -m pytest tests/integration/test_direct_agent_communication.py -v -s
+   ```powershell
+   uv run pytest tests/integration/test_direct_agent_communication.py -v -s
    ```
 
 3. **Expected output**:
@@ -110,27 +170,27 @@ python benchmark/benchmark.py
 
 ### Redis Connection Error
 
-```bash
+```powershell
 # Check if Redis is running
-redis-cli ping
+& "D:\Redis\redis-cli.exe" ping
 
 # If not running, start it
-redis-server
+& "D:\Redis\redis-server.exe"
 ```
 
 ### Import Errors
 
-```bash
+```powershell
 # Reinstall dependencies
 uv sync
 ```
 
 ### Test Failures
 
-```bash
+```powershell
 # Flush Redis database
-redis-cli FLUSHDB
+& "D:\Redis\redis-cli.exe" FLUSHDB
 
 # Rerun tests
-python -m pytest tests/integration/test_direct_agent_communication.py -v -s
+uv run pytest tests/integration/test_direct_agent_communication.py -v -s
 ```

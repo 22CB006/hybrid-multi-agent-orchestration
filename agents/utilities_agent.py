@@ -221,3 +221,22 @@ class UtilitiesAgent(BaseDataPlaneAgent):
             ),
             "quote_valid_until": "30_days",
         }
+
+
+if __name__ == "__main__":
+    """Run Utilities Agent as standalone service."""
+    import asyncio
+
+    async def main():
+        """Initialize and start Utilities Agent."""
+        config = Config()
+        agent = UtilitiesAgent(config)
+        await agent.start()
+
+        # Keep running until interrupted
+        try:
+            await asyncio.Event().wait()  # Blocks forever
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            await agent.shutdown()
+
+    asyncio.run(main())

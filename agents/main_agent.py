@@ -225,13 +225,20 @@ class MainAgent:
 
             # Publish TaskRequest to each target agent
             for agent_name in parsed_intent.target_agents:
+                # Map generic intent to agent-specific task type
+                task_type = parsed_intent.intent
+                if agent_name == "utilities":
+                    task_type = "setup_electricity"  # Default utilities task
+                elif agent_name == "broadband":
+                    task_type = "setup_internet"  # Default broadband task
+
                 task_request = TaskRequest(
                     correlation_id=correlation_id,
                     timestamp=datetime.now(timezone.utc),
                     event_type="task_request",
                     source_agent="main",
                     target_agent=agent_name,
-                    task_type=parsed_intent.intent,
+                    task_type=task_type,
                     payload=parsed_intent.entities,
                     timeout_seconds=self.config.task_timeout,
                 )
@@ -244,7 +251,7 @@ class MainAgent:
                     f"Published task request to {agent_name}",
                     correlation_id=correlation_id,
                     agent=agent_name,
-                    task_type=parsed_intent.intent,
+                    task_type=task_type,
                 )
 
             return correlation_id
@@ -285,7 +292,17 @@ class MainAgent:
             target_agents = ["utilities", "broadband"]
 
         # Extract address if present (simple pattern matching)
-        entities = {"user_input": user_input}
+        import re
+
+        # Try to extract address from input
+        address_match = re.search(
+            r"\d+\s+[A-Za-z\s]+(?:Street|St|Avenue|Ave|Road|Rd|Drive|Dr|Lane|Ln|Boulevard|Blvd)",
+            user_input,
+            re.IGNORECASE,
+        )
+        address = address_match.group(0) if address_match else "123 Main Street"
+
+        entities = {"user_input": user_input, "address": address}
 
         return ParsedIntent(
             intent="setup_services",
@@ -694,7 +711,7 @@ class MainAgent:
             if not pending_workflows:
                 break
 
-            await asyncio.sleep(0.5)-
+            await asyncio.sleep(0.5)
 
     async def _save_workflow_state(self, workflow: WorkflowState) -> None:
         """

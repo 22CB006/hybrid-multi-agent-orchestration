@@ -1,0 +1,254 @@
+{
+  "info": {
+    "name": "Hybrid Multi-Agent Architecture API",
+    "description": "API collection for testing the hybrid multi-agent orchestration system for home moving assistance",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "correlation_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "event_id",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Root",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:8000/",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8000",
+          "path": [""]
+        },
+        "description": "Get API information and available endpoints"
+      },
+      "response": []
+    },
+    {
+      "name": "Submit Task - Utilities Only",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "if (pm.response.code === 202) {",
+              "    var jsonData = pm.response.json();",
+              "    pm.collectionVariables.set('correlation_id', jsonData.correlation_id);",
+              "    console.log('Correlation ID saved: ' + jsonData.correlation_id);",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"user_input\": \"I need to set up electricity and gas at 123 Main Street\"\n}"
+        },
+        "url": {
+          "raw": "http://localhost:8000/tasks",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8000",
+          "path": ["tasks"]
+        },
+        "description": "Submit a task request for utilities setup only"
+      },
+      "response": []
+    },
+    {
+      "name": "Submit Task - Broadband Only",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "if (pm.response.code === 202) {",
+              "    var jsonData = pm.response.json();",
+              "    pm.collectionVariables.set('correlation_id', jsonData.correlation_id);",
+              "    console.log('Correlation ID saved: ' + jsonData.correlation_id);",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"user_input\": \"I need to set up internet and broadband at 456 Oak Avenue\"\n}"
+        },
+        "url": {
+          "raw": "http://localhost:8000/tasks",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8000",
+          "path": ["tasks"]
+        },
+        "description": "Submit a task request for broadband setup only"
+      },
+      "response": []
+    },
+    {
+      "name": "Submit Task - Both Services",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "if (pm.response.code === 202) {",
+              "    var jsonData = pm.response.json();",
+              "    pm.collectionVariables.set('correlation_id', jsonData.correlation_id);",
+              "    console.log('Correlation ID saved: ' + jsonData.correlation_id);",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"user_input\": \"I'm moving to 789 Pine Road and need electricity, gas, and internet setup\"\n}"
+        },
+        "url": {
+          "raw": "http://localhost:8000/tasks",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8000",
+          "path": ["tasks"]
+        },
+        "description": "Submit a task request for both utilities and broadband setup (parallel execution)"
+      },
+      "response": []
+    },
+    {
+      "name": "Get Task Status",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:8000/tasks/{{correlation_id}}",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8000",
+          "path": ["tasks", "{{correlation_id}}"]
+        },
+        "description": "Retrieve the status and results of a submitted task using the correlation_id from the previous request"
+      },
+      "response": []
+    },
+    {
+      "name": "Health Check",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:8000/health",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8000",
+          "path": ["health"]
+        },
+        "description": "Check the health status of the system and all components"
+      },
+      "response": []
+    },
+    {
+      "name": "Get Agent Registry",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:8000/agents",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8000",
+          "path": ["agents"]
+        },
+        "description": "Retrieve the status of all registered agents including health status and active tasks"
+      },
+      "response": []
+    },
+    {
+      "name": "Get Dead Letter Queue",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "if (pm.response.code === 200) {",
+              "    var jsonData = pm.response.json();",
+              "    if (jsonData.events && jsonData.events.length > 0) {",
+              "        pm.collectionVariables.set('event_id', jsonData.events[0].event_id);",
+              "        console.log('Event ID saved: ' + jsonData.events[0].event_id);",
+              "    }",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:8000/dead-letter-queue",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8000",
+          "path": ["dead-letter-queue"]
+        },
+        "description": "Retrieve all failed events in the dead letter queue"
+      },
+      "response": []
+    },
+    {
+      "name": "Retry Dead Letter Event",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:8000/dead-letter-queue/{{event_id}}/retry",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8000",
+          "path": ["dead-letter-queue", "{{event_id}}", "retry"]
+        },
+        "description": "Retry a failed event from the dead letter queue using the event_id from the previous request"
+      },
+      "response": []
+    }
+  ]
+}

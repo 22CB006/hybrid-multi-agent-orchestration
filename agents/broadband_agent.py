@@ -275,3 +275,22 @@ class BroadbandAgent(BaseDataPlaneAgent):
             "estimated_duration_hours": 2,
             "customer_presence_required": True,
         }
+
+
+if __name__ == "__main__":
+    """Run Broadband Agent as standalone service."""
+    import asyncio
+
+    async def main():
+        """Initialize and start Broadband Agent."""
+        config = Config()
+        agent = BroadbandAgent(config)
+        await agent.start()
+
+        # Keep running until interrupted
+        try:
+            await asyncio.Event().wait()  # Blocks forever
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            await agent.shutdown()
+
+    asyncio.run(main())
