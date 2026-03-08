@@ -18,6 +18,41 @@ from core.schemas import TaskRequest
 class BroadbandAgent(BaseDataPlaneAgent):
     """Data plane agent handling internet and broadband setup tasks."""
 
+    TASK_TYPES = ["check_availability", "setup_internet", "get_plans", "schedule_installation"]
+    KEYWORDS = [
+        # Internet
+        "internet", "internet connection", "net", "net connection",
+        "online", "go online", "get online",
+        # Broadband
+        "broadband", "broad band", "bb",
+        # WiFi
+        "wifi", "wi-fi", "wi fi", "wireless",
+        "router", "modem", "hotspot",
+        # Fiber
+        "fiber", "fibre", "fiber optic", "fibre optic",
+        "ftth", "fttx", "optical fiber",
+        # Connection types
+        "cable", "cable internet", "dsl", "adsl", "vdsl",
+        "leased line", "dedicated line",
+        # Speed
+        "mbps", "gbps", "speed", "bandwidth", "high speed",
+        "fast internet", "slow internet", "speed test",
+        # ISP / Providers
+        "isp", "provider", "service provider",
+        "jio", "jio fiber", "jiofiber",
+        "airtel", "airtel fiber", "airtel broadband",
+        "act", "act fibernet", "act broadband",
+        "bsnl", "bsnl broadband", "bsnl fiber",
+        "hathway", "tikona", "excitel", "tata play",
+        # Plans
+        "plan", "plans", "data plan", "unlimited",
+        "ott", "streaming", "netflix", "hotstar",
+        # Installation
+        "installation", "install", "technician",
+        "setup box", "set top box",
+    ]
+    DESCRIPTION = "Handles internet and broadband setup, availability checks, plan comparison, and installation scheduling"
+
     def __init__(self, config: Config):
         """Initialize Broadband Agent.
 

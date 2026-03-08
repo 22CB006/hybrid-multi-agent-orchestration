@@ -18,6 +18,32 @@ from core.schemas import TaskRequest
 class UtilitiesAgent(BaseDataPlaneAgent):
     """Data plane agent handling electricity and gas setup tasks."""
 
+    TASK_TYPES = ["validate_address", "setup_electricity", "setup_gas", "get_quote"]
+    KEYWORDS = [
+        # Electricity
+        "electricity", "electric", "electrical", "elec",
+        "power", "power supply", "power connection",
+        "current", "voltage", "wiring",
+        "meter", "electric meter", "power meter",
+        "eb", "eb connection", "electricity board",
+        "tneb", "tangedco",  # Tamil Nadu electricity board
+        "light", "light connection", "lights",
+        # Gas
+        "gas", "gas connection", "gas line", "gas pipe",
+        "lpg", "cooking gas", "gas cylinder", "gas stove",
+        "piped gas", "png", "natural gas", "cng",
+        "indane", "hp gas", "bharat gas",
+        # General utilities
+        "utilities", "utility", "utility services",
+        "energy", "energy connection",
+        "bill", "electricity bill", "gas bill", "utility bill",
+        "tariff", "rate", "unit rate",
+        # Actions
+        "new connection", "reconnect", "disconnect",
+        "transfer connection", "name transfer",
+    ]
+    DESCRIPTION = "Handles electricity and gas utility setup, address validation, service quotes, and new connections"
+
     def __init__(self, config: Config):
         """Initialize Utilities Agent.
 

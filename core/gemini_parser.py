@@ -6,7 +6,7 @@ that can be routed to appropriate agents.
 
 import asyncio
 import json
-from typing import List
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 import google.generativeai as genai
@@ -41,7 +41,7 @@ class GeminiParser:
     def __init__(
         self,
         api_key: str,
-        model: str = "gemini-1.5-flash",
+        model: str = "gemini-2.0-flash",
         timeout_seconds: int = 2,
         logger: StructuredLogger = None,
     ):
@@ -50,7 +50,7 @@ class GeminiParser:
 
         Args:
             api_key: Gemini API authentication key
-            model: Gemini model name (default: gemini-1.5-flash)
+            model: Gemini model name (default: gemini-2.0-flash)
             timeout_seconds: Request timeout (default: 2)
             logger: Optional structured logger instance
         """
@@ -63,16 +63,39 @@ class GeminiParser:
         genai.configure(api_key=self.api_key)
         self.model = genai.GenerativeModel(self.model_name)
 
-    def _construct_prompt(self, user_input: str) -> str:
+    def _construct_prompt(
+        self, user_input: str, agent_capabilities: Optional[Dict[str, Any]] = None
+    ) -> str:
         """
         Construct prompt template for intent extraction.
 
         Args:
             user_input: Raw user request text
+            agent_capabilities: Optional dict of agent_name -> AgentInfo with
+                task_types and keywords for dynamic prompt building
 
         Returns:
             Formatted prompt for Gemini API
         """
+        # Build agent descriptions dynamically from registered capabilities
+        if agent_capabilities:
+            agent_lines = []
+            agent_names = []
+            for agent_name, info in agent_capabilities.items():
+                keywords = getattr(info, "keywords", [])
+                task_types = getattr(info, "task_types", [])
+                keywords_str = ", ".join(keywords) if keywords else "general"
+                task_types_str = ", ".join(task_types) if task_types else "general"
+                agent_lines.append(
+                    f'   - "{agent_name}" for tasks: {task_types_str} (triggers: {keywords_str})'
+                )
+                agent_names.append(f'"{agent_name}"')
+            agents_section = "\n".join(agent_lines)
+            agents_list = ", ".join(agent_names)
+        else:
+            agents_section = '   - "utilities" for electricity and gas setup\n   - "broadband" for internet and broadband setup'
+            agents_list = '"utilities", "broadband"'
+
         return f"""You are an AI assistant helping users move to a new home. Parse the following user request and extract:
 1. The primary intent (what the user wants to accomplish)
 2. Key entities such as:
@@ -81,9 +104,8 @@ class GeminiParser:
    - services: List of services they need (electricity, gas, internet, broadband, etc.)
    - service_preferences: Any specific preferences or requirements
 3. Which agents should handle this request:
-   - "utilities" for electricity and gas setup
-   - "broadband" for internet and broadband setup
-   - Include both if the user needs multiple services
+{agents_section}
+   - Include multiple agents if the user needs multiple services
 
 User input: "{user_input}"
 
@@ -103,17 +125,23 @@ Rules:
 - If address is not mentioned, omit the "address" field
 - If move_date is not mentioned, omit the "move_date" field
 - Always include "services" as a list (can be empty if unclear)
-- target_agents must be a list containing "utilities", "broadband", or both
+- target_agents must be a list containing {agents_list}, or a combination
 - confidence should be between 0.0 and 1.0
 - Return ONLY the JSON object, nothing else"""
 
-    async def parse_input(self, user_input: str, correlation_id: UUID) -> ParsedIntent:
+    async def parse_input(
+        self,
+        user_input: str,
+        correlation_id: UUID,
+        agent_capabilities: Optional[Dict[str, Any]] = None,
+    ) -> ParsedIntent:
         """
         Parse natural language to structured intent.
 
         Args:
             user_input: Raw user request text
             correlation_id: Request tracking ID for logging
+            agent_capabilities: Optional dict of agent capabilities for dynamic routing
 
         Returns:
             ParsedIntent object with extracted information
@@ -130,8 +158,8 @@ Rules:
         )
 
         try:
-            # Construct prompt
-            prompt = self._construct_prompt(user_input)
+            # Construct prompt with dynamic agent capabilities
+            prompt = self._construct_prompt(user_input, agent_capabilities)
 
             # Call Gemini API with timeout
             response = await asyncio.wait_for(

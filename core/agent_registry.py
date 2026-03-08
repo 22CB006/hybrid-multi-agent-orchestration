@@ -31,6 +31,15 @@ class AgentInfo(BaseModel):
     consecutive_missed_heartbeats: int = Field(
         default=0, description="Count of consecutive missed heartbeats"
     )
+    task_types: List[str] = Field(
+        default_factory=list, description="Task types this agent handles"
+    )
+    keywords: List[str] = Field(
+        default_factory=list, description="Keywords that trigger routing to this agent"
+    )
+    description: str = Field(
+        default="", description="Human-readable description of agent capabilities"
+    )
 
 
 class AgentRegistry:
@@ -193,6 +202,57 @@ class AgentRegistry:
             List of AgentInfo objects for all registered agents
         """
         return list(self.agents.values())
+
+    async def register_capabilities(
+        self,
+        agent_name: str,
+        task_types: List[str],
+        keywords: List[str],
+        description: str = "",
+    ) -> None:
+        """
+        Register an agent's capabilities (task types, routing keywords, description).
+
+        Args:
+            agent_name: Unique agent identifier
+            task_types: Task types this agent can handle
+            keywords: Keywords that should trigger routing to this agent
+            description: Human-readable description of agent capabilities
+        """
+        # Load existing registry first to avoid overwriting other agents
+        await self._load_from_redis()
+
+        if agent_name in self.agents:
+            self.agents[agent_name].task_types = task_types
+            self.agents[agent_name].keywords = keywords
+            self.agents[agent_name].description = description
+        else:
+            self.agents[agent_name] = AgentInfo(
+                agent_name=agent_name,
+                status="healthy",
+                last_heartbeat=datetime.now(timezone.utc),
+                uptime_seconds=0,
+                task_types=task_types,
+                keywords=keywords,
+                description=description,
+            )
+        await self._save_to_redis()
+        self.logger.info(
+            f"Registered capabilities for {agent_name}",
+            task_types=task_types,
+            keywords_count=len(keywords),
+            description=description,
+        )
+
+    async def get_capabilities_map(self) -> Dict[str, AgentInfo]:
+        """
+        Return all agents that have registered capabilities, loaded fresh from Redis.
+
+        Returns:
+            Dict mapping agent name to AgentInfo for agents with task_types defined
+        """
+        await self._load_from_redis()
+        return {name: info for name, info in self.agents.items() if info.task_types}
 
     async def get_agent(self, agent_name: str) -> Optional[AgentInfo]:
         """

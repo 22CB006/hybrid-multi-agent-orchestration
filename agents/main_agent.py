@@ -26,6 +26,7 @@ from bus.redis_bus import RedisBus
 from core.agent_registry import AgentRegistry
 from core.config import Config
 from core.dead_letter_queue import DeadLetterQueue
+from core.gemini_parser import GeminiParser, ParsedIntent
 from core.logger import StructuredLogger
 from core.policy_enforcer import PolicyEnforcer
 from core.schemas import (
@@ -36,15 +37,6 @@ from core.schemas import (
     HealthCheck,
     PolicyViolation,
 )
-
-
-class ParsedIntent(BaseModel):
-    """Structured output from LLM parser."""
-
-    intent: str = Field(..., description="Primary user intent")
-    entities: dict = Field(..., description="Extracted entities")
-    target_agents: List[str] = Field(..., description="Agents to handle request")
-    confidence: float = Field(..., ge=0.0, le=1.0, description="Parser confidence")
 
 
 class WorkflowState(BaseModel):
@@ -109,6 +101,7 @@ class MainAgent:
         self.agent_registry: Optional[AgentRegistry] = None
         self.dead_letter_queue: Optional[DeadLetterQueue] = None
         self.policy_enforcer: Optional[PolicyEnforcer] = None
+        self.gemini_parser: Optional[GeminiParser] = None
 
         # Workflow tracking
         self.active_workflows: Dict[UUID, WorkflowState] = {}
@@ -154,16 +147,32 @@ class MainAgent:
                 self.redis_client, self.config, self.logger
             )
 
+            # Initialize Gemini parser for LLM-based intent extraction
+            try:
+                self.gemini_parser = GeminiParser(
+                    api_key=self.config.gemini_api_key,
+                    model=self.config.gemini_model,
+                    timeout_seconds=self.config.gemini_timeout,
+                    logger=self.logger,
+                )
+                self.logger.info("Gemini parser initialized")
+            except Exception as e:
+                self.logger.warning(
+                    f"Gemini parser initialization failed, will use keyword fallback: {e}"
+                )
+                self.gemini_parser = None
+
             # Subscribe to all agent events for monitoring
             await self.bus.subscribe("agent.*.*", self.monitor_events)
 
             # Start health monitoring background task
             self._health_monitor_task = asyncio.create_task(self.monitor_agent_health())
 
-            # Register signal handlers for graceful shutdown (Linux/Mac only)
+            # Register signal handlers for graceful shutdown (main thread only)
             import sys
+            import threading
 
-            if sys.platform != "win32":
+            if sys.platform != "win32" and threading.current_thread() is threading.main_thread():
                 loop = asyncio.get_event_loop()
                 for sig in (signal.SIGTERM, signal.SIGINT):
                     loop.add_signal_handler(
@@ -205,10 +214,34 @@ class MainAgent:
         )
 
         try:
-            # Parse input to determine target agents
-            # TODO: Implement Gemini parser integration
-            # For now, use simple keyword matching
-            parsed_intent = self._parse_input_simple(user_input)
+            # Load registered agent capabilities from registry
+            capabilities = {}
+            if self.agent_registry:
+                capabilities = await self.agent_registry.get_capabilities_map()
+
+            # Try Gemini parser first, fall back to keyword matching
+            parsed_intent = None
+            if self.gemini_parser and capabilities:
+                try:
+                    parsed_intent = await self.gemini_parser.parse_input(
+                        user_input, correlation_id, agent_capabilities=capabilities
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        f"Gemini parser failed, falling back to keyword matching: {e}",
+                        correlation_id=correlation_id,
+                    )
+
+            if parsed_intent is None:
+                if capabilities:
+                    parsed_intent = self._parse_input_from_capabilities(
+                        user_input, capabilities
+                    )
+                else:
+                    self.logger.warning(
+                        "No agent capabilities registered, using hardcoded fallback"
+                    )
+                    parsed_intent = self._parse_input_simple(user_input)
 
             # Create workflow state
             workflow = WorkflowState(
@@ -225,12 +258,13 @@ class MainAgent:
 
             # Publish TaskRequest to each target agent
             for agent_name in parsed_intent.target_agents:
-                # Map generic intent to agent-specific task type
+                # Map intent to agent-specific task type dynamically
                 task_type = parsed_intent.intent
-                if agent_name == "utilities":
-                    task_type = "setup_electricity"  # Default utilities task
-                elif agent_name == "broadband":
-                    task_type = "setup_internet"  # Default broadband task
+                agent_info = capabilities.get(agent_name)
+                if agent_info and agent_info.task_types:
+                    # Use first registered task type as default if intent doesn't match
+                    if task_type not in agent_info.task_types:
+                        task_type = agent_info.task_types[0]
 
                 task_request = TaskRequest(
                     correlation_id=correlation_id,
@@ -262,6 +296,86 @@ class MainAgent:
                 correlation_id=correlation_id,
             )
             raise
+
+    def _parse_input_from_capabilities(
+        self, user_input: str, capabilities: Dict[str, "AgentInfo"]
+    ) -> ParsedIntent:
+        """
+        Dynamic keyword-based parser using registered agent capabilities.
+
+        Uses multi-strategy matching:
+        1. Exact phrase match (multi-word keywords like "gas connection")
+        2. Exact word match (single-word keywords)
+        3. Stem/prefix match ("electric" matches input word "electrical")
+
+        Scores each agent by number of keyword hits and routes to all
+        agents that score above zero. If none match, falls back to all agents.
+
+        Args:
+            user_input: User's natural language input
+            capabilities: Dict of agent_name -> AgentInfo with keywords
+
+        Returns:
+            ParsedIntent with target agents determined from capabilities
+        """
+        user_input_lower = user_input.lower()
+        input_words = set(user_input_lower.split())
+
+        agent_scores: Dict[str, int] = {}
+
+        for agent_name, info in capabilities.items():
+            score = 0
+            for kw in info.keywords:
+                kw_lower = kw.lower()
+
+                # Strategy 1: Multi-word phrase match (e.g., "gas connection", "jio fiber")
+                if " " in kw_lower:
+                    if kw_lower in user_input_lower:
+                        score += 3  # Phrase matches are strongest signal
+                    continue
+
+                # Strategy 2: Exact word match (e.g., "gas" matches word "gas" but not "gasoline")
+                if kw_lower in input_words:
+                    score += 2
+                    continue
+
+                # Strategy 3: Stem/prefix match (e.g., keyword "electric" matches input "electrical")
+                for word in input_words:
+                    # Check if keyword is a prefix of input word or vice versa (min 3 chars)
+                    if len(kw_lower) >= 3 and len(word) >= 3:
+                        if word.startswith(kw_lower) or kw_lower.startswith(word):
+                            score += 1
+                            break
+
+            if score > 0:
+                agent_scores[agent_name] = score
+
+        # Select agents that matched
+        if agent_scores:
+            target_agents = list(agent_scores.keys())
+            # Sort by score descending for logging
+            target_agents.sort(key=lambda a: agent_scores[a], reverse=True)
+            confidence = min(0.95, 0.5 + 0.1 * max(agent_scores.values()))
+
+            self.logger.info(
+                "Dynamic routing scores",
+                agent_scores=agent_scores,
+                selected_agents=target_agents,
+            )
+        else:
+            # Fallback: no keywords matched, route to all registered agents
+            target_agents = list(capabilities.keys())
+            confidence = 0.3
+
+        address = self._extract_address(user_input)
+        entities = {"user_input": user_input, "address": address}
+
+        return ParsedIntent(
+            intent="setup_services",
+            entities=entities,
+            target_agents=target_agents,
+            confidence=confidence,
+        )
 
     def _parse_input_simple(self, user_input: str) -> ParsedIntent:
         """
@@ -299,17 +413,7 @@ class MainAgent:
         if not target_agents:
             target_agents = ["utilities", "broadband"]
 
-        # Extract address if present (simple pattern matching)
-        import re
-
-        # Try to extract address from input
-        address_match = re.search(
-            r"\d+\s+[A-Za-z\s]+(?:Street|St|Avenue|Ave|Road|Rd|Drive|Dr|Lane|Ln|Boulevard|Blvd)",
-            user_input,
-            re.IGNORECASE,
-        )
-        address = address_match.group(0) if address_match else "123 Main Street"
-
+        address = self._extract_address(user_input)
         entities = {"user_input": user_input, "address": address}
 
         return ParsedIntent(
@@ -318,6 +422,63 @@ class MainAgent:
             target_agents=target_agents,
             confidence=0.8,
         )
+
+    def _extract_address(self, user_input: str) -> str:
+        """
+        Extract address from user input using multiple patterns.
+
+        Tries in order:
+        1. Numbered addresses: "42 Oak Avenue", "123 Main St"
+        2. Location prepositions: "at <address>", "@ <address>", "near <address>", "to <address>"
+        3. Named places with suffixes: "arokiyamadha avenue", "baker street"
+
+        Args:
+            user_input: Raw user input text
+
+        Returns:
+            Extracted address string, or the full user input as fallback
+        """
+        import re
+
+        # Pattern 1: Numbered address (e.g., "42 Oak Avenue", "123 Main St")
+        numbered = re.search(
+            r"\d+\s+[A-Za-z\s]+(?:Street|St|Avenue|Ave|Road|Rd|Drive|Dr|Lane|Ln|Boulevard|Blvd|Nagar|Colony|Layout)",
+            user_input,
+            re.IGNORECASE,
+        )
+        if numbered:
+            return numbered.group(0).strip()
+
+        # Pattern 2: After location preposition
+        # Try "@" and "at" first (strongest location signals), then "near", "to", "in"
+        for prep_pattern in [
+            r"(?:@|at)\s+(.+?)$",
+            r"(?:near|to|in)\s+(.+?)$",
+        ]:
+            preposition = re.search(prep_pattern, user_input, re.IGNORECASE)
+            if preposition:
+                candidate = preposition.group(1).strip()
+                # Clean trailing service keywords from the captured address
+                candidate = re.sub(
+                    r"\s*(?:and\s+)?(?:need|set\s*up|setup|please|electricity|gas|internet|broadband|wifi|power|energy|utilities)\b.*$",
+                    "",
+                    candidate,
+                    flags=re.IGNORECASE,
+                ).strip()
+                if len(candidate) >= 3:
+                    return candidate
+
+        # Pattern 3: Named place with road/area suffix anywhere in input
+        named = re.search(
+            r"[A-Za-z][A-Za-z\s]+(?:Street|St|Avenue|Ave|Road|Rd|Drive|Dr|Lane|Ln|Boulevard|Blvd|Nagar|Colony|Layout|Place|Way|Circle|Court|Ct)",
+            user_input,
+            re.IGNORECASE,
+        )
+        if named:
+            return named.group(0).strip()
+
+        # Fallback: return the full user input as address context
+        return user_input.strip()
 
     async def monitor_events(self, event: BaseEvent) -> None:
         """

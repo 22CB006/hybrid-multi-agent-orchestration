@@ -23,7 +23,7 @@ class Config(BaseSettings):
     # Gemini Configuration
     gemini_api_key: str = Field(..., description="Gemini API key for LLM parsing")
     gemini_model: str = Field(
-        default="gemini-1.5-flash", description="Gemini model name"
+        default="gemini-2.0-flash", description="Gemini model name"
     )
     gemini_timeout: int = Field(default=2, description="Gemini API timeout in seconds")
 

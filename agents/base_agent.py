@@ -17,6 +17,7 @@ from uuid import UUID
 import redis.asyncio as redis
 
 from bus.redis_bus import RedisBus
+from core.agent_registry import AgentRegistry
 from core.config import Config
 from core.logger import StructuredLogger
 from core.schemas import TaskRequest, TaskResponse, TaskFailure, HealthCheck
@@ -31,7 +32,13 @@ class BaseDataPlaneAgent(ABC):
     - Idempotent event processing with correlation_id tracking
     - Periodic health check publishing
     - Graceful shutdown handling
+    - Capability registration for dynamic routing
     """
+
+    # Override in subclasses to declare capabilities
+    TASK_TYPES: list[str] = []
+    KEYWORDS: list[str] = []
+    DESCRIPTION: str = ""
 
     def __init__(self, agent_name: str, config: Config):
         """
@@ -81,6 +88,13 @@ class BaseDataPlaneAgent(ABC):
             )
             await self.idempotency_cache.ping()
             self.logger.info("Idempotency cache connected")
+
+            # Register capabilities in agent registry
+            if self.TASK_TYPES or self.KEYWORDS:
+                registry = AgentRegistry(self.idempotency_cache, self.logger)
+                await registry.register_capabilities(
+                    self.agent_name, self.TASK_TYPES, self.KEYWORDS, self.DESCRIPTION
+                )
 
             # Subscribe to agent-specific task request channel
             task_request_pattern = f"agent.{self.agent_name}.task_request"
