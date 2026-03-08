@@ -102,10 +102,30 @@ uv run pytest -v -s
 uv run pytest tests/integration/test_direct_agent_communication.py -v -s
 ```
 
+### Run End-to-End Integration Test
+
+```powershell
+# Test complete workflow with Main Agent orchestration and parallel execution
+python -m pytest tests/integration/test_end_to_end_workflow.py -v -s
+```
+
+### Run Failure Recovery Tests
+
+```powershell
+# Test retry logic with exponential backoff and DLQ functionality
+python -m pytest tests/integration/test_failure_recovery.py -v -s
+```
+
 ### Run Unit Tests Only
 
 ```powershell
 uv run pytest tests/unit/ -v
+```
+
+### Run Idempotency Test
+
+```powershell
+python -m pytest tests/unit/test_agents.py -v -k test_idempotent
 ```
 
 ### Run Policy Enforcer Tests
@@ -155,16 +175,22 @@ uv run python benchmark/benchmark.py
    & "D:\Redis\redis-server.exe"
    ```
 
-2. **Run verification tests** (shows direct agent communication):
+2. **Run end-to-end integration test** (validates complete workflow):
+   ```powershell
+   python -m pytest tests/integration/test_end_to_end_workflow.py -v -s
+   ```
+
+3. **Run direct communication tests** (shows agent-to-agent messaging):
    ```powershell
    uv run pytest tests/integration/test_direct_agent_communication.py -v -s
    ```
 
-3. **Expected output**:
-   - ✓ 3 tests passed
-   - ✓ Parallel execution verified (~0.2s)
-   - ✓ No Main Agent routing confirmed
-   - ✓ Direct pub/sub working
+4. **Expected output**:
+   - ✓ All tests passed
+   - ✓ Parallel execution verified
+   - ✓ Main Agent orchestration working
+   - ✓ Response aggregation successful
+   - ✓ No Main Agent routing in data path
 
 ## Troubleshooting
 
