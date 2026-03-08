@@ -47,6 +47,12 @@ python -m pytest tests/integration/test_direct_agent_communication.py::test_para
 python -m pytest tests/unit/ -v
 ```
 
+### Run Policy Enforcer Tests
+
+```bash
+uv run python -m pytest tests/unit/test_policy_enforcer.py -v
+```
+
 ### Run with Coverage
 
 ```bash
