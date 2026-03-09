@@ -27,6 +27,7 @@ from core.agent_registry import AgentRegistry
 from core.config import Config
 from core.dead_letter_queue import DeadLetterQueue
 from core.gemini_parser import GeminiParser, ParsedIntent
+from core.openrouter_parser import OpenRouterParser
 from core.logger import StructuredLogger
 from core.policy_enforcer import PolicyEnforcer
 from core.schemas import (
@@ -102,6 +103,7 @@ class MainAgent:
         self.dead_letter_queue: Optional[DeadLetterQueue] = None
         self.policy_enforcer: Optional[PolicyEnforcer] = None
         self.gemini_parser: Optional[GeminiParser] = None
+        self.openrouter_parser: Optional[OpenRouterParser] = None
 
         # Workflow tracking
         self.active_workflows: Dict[UUID, WorkflowState] = {}
@@ -147,20 +149,48 @@ class MainAgent:
                 self.redis_client, self.config, self.logger
             )
 
-            # Initialize Gemini parser for LLM-based intent extraction
+            # Initialize Gemini parser (optional — skipped if GEMINI_API_KEY not set)
+            if self.config.gemini_api_key:
+                try:
+                    self.gemini_parser = GeminiParser(
+                        api_key=self.config.gemini_api_key,
+                        model=self.config.gemini_model,
+                        timeout_seconds=self.config.gemini_timeout,
+                        logger=self.logger,
+                    )
+                    self.logger.info("Gemini parser initialized")
+                except Exception as e:
+                    self.logger.warning(f"Gemini parser init failed, will use keyword fallback: {e}")
+                    self.gemini_parser = None
+            else:
+                self.logger.info("GEMINI_API_KEY not set — keyword fallback active for default routing")
+
+
+
+
+
+
+
+
+
+
+
+
+
+            # Initialize OpenRouter parser for Mode 3 (DeepSeek v3.2 routing)
             try:
-                self.gemini_parser = GeminiParser(
-                    api_key=self.config.gemini_api_key,
-                    model=self.config.gemini_model,
-                    timeout_seconds=self.config.gemini_timeout,
-                    logger=self.logger,
-                )
-                self.logger.info("Gemini parser initialized")
+                openrouter_key = getattr(self.config, "openrouter_api_key", None)
+                if openrouter_key:
+                    self.openrouter_parser = OpenRouterParser(
+                        api_key=openrouter_key,
+                        logger=self.logger,
+                    )
+                    self.logger.info("OpenRouter parser initialized")
+                else:
+                    self.logger.info("OPENROUTER_API_KEY not set — Mode 3 will fall back to keywords")
             except Exception as e:
-                self.logger.warning(
-                    f"Gemini parser initialization failed, will use keyword fallback: {e}"
-                )
-                self.gemini_parser = None
+                self.logger.warning(f"OpenRouter parser init failed: {e}")
+                self.openrouter_parser = None
 
             # Subscribe to all agent events for monitoring
             await self.bus.subscribe("agent.*.*", self.monitor_events)
@@ -188,19 +218,28 @@ class MainAgent:
             self.logger.error(f"Failed to start Main Agent: {e}")
             raise
 
-    async def handle_user_request(self, user_input: str) -> UUID:
+    async def handle_user_request(
+        self,
+        user_input: str,
+        routing_mode: str = "gemini",
+        payload_override: Optional[dict] = None,
+    ) -> UUID:
         """
         Process user request and orchestrate multi-agent workflow.
 
         Flow:
         1. Generate correlation_id
-        2. Parse input using LLM (placeholder for now)
+        2. Parse input using selected routing strategy
         3. Create TaskRequest events for each target agent
-        4. Publish events to appropriate channels
+        4. Publish events to appropriate channels (fire-and-forget)
         5. Initialize workflow state for tracking
 
         Args:
             user_input: Natural language user request
+            routing_mode: One of:
+                "gemini"      — Mode 2 default: Gemini LLM with keyword fallback
+                "keywords"    — Mode 2 explicit: keyword matching only (no LLM)
+                "openrouter"  — Mode 3: DeepSeek v3.2 via OpenRouter API
 
         Returns:
             correlation_id for status tracking
@@ -219,19 +258,63 @@ class MainAgent:
             if self.agent_registry:
                 capabilities = await self.agent_registry.get_capabilities_map()
 
-            # Try Gemini parser first, fall back to keyword matching
+            # ── Route based on selected routing_mode ──────────────────────────
             parsed_intent = None
-            if self.gemini_parser and capabilities:
-                try:
-                    parsed_intent = await self.gemini_parser.parse_input(
-                        user_input, correlation_id, agent_capabilities=capabilities
-                    )
-                except Exception as e:
+
+            if routing_mode == "openrouter":
+                # Mode 3: DeepSeek v3.2 via OpenRouter API
+                self.logger.info(
+                    "Using OpenRouter (DeepSeek v3.2) for routing",
+                    correlation_id=correlation_id,
+                    routing_mode=routing_mode,
+                )
+                if self.openrouter_parser:
+                    try:
+                        parsed_intent, llm_ms = await self.openrouter_parser.parse_input(user_input)
+                        self.logger.info(
+                            f"OpenRouter routing complete in {llm_ms}ms",
+                            correlation_id=correlation_id,
+                            target_agents=parsed_intent.target_agents,
+                        )
+                    except Exception as e:
+                        self.logger.warning(
+                            f"OpenRouter failed, falling back to keywords: {e}",
+                            correlation_id=correlation_id,
+                        )
+                else:
                     self.logger.warning(
-                        f"Gemini parser failed, falling back to keyword matching: {e}",
+                        "OpenRouter parser not available, falling back to keywords",
                         correlation_id=correlation_id,
                     )
 
+            elif routing_mode == "keywords":
+                # Mode 2 explicit: keyword matching only, no LLM calls
+                self.logger.info(
+                    "Using keyword matching for routing (no LLM)",
+                    correlation_id=correlation_id,
+                    routing_mode=routing_mode,
+                )
+                # parsed_intent stays None → falls through to keyword logic below
+
+            else:
+                # Mode 2 default (gemini): try Gemini LLM first, keywords as fallback
+                self.logger.info(
+                    "Using Gemini LLM for routing (with keyword fallback)",
+                    correlation_id=correlation_id,
+                    routing_mode=routing_mode,
+                )
+                if self.gemini_parser and capabilities:
+                    try:
+                        parsed_intent = await self.gemini_parser.parse_input(
+                            user_input, correlation_id, agent_capabilities=capabilities
+                        )
+                    except Exception as e:
+                        self.logger.warning(
+                            f"Gemini parser failed, falling back to keyword matching: {e}",
+                            correlation_id=correlation_id,
+                        )
+
+            # Keyword fallback (used by Mode 2 explicit and as fallback for others)
             if parsed_intent is None:
                 if capabilities:
                     parsed_intent = self._parse_input_from_capabilities(
@@ -266,8 +349,11 @@ class MainAgent:
             self.active_workflows[correlation_id] = workflow
             await self._save_workflow_state(workflow)
 
+            # Use payload_override if provided, otherwise fall back to parsed entities
+            effective_payload = payload_override if payload_override is not None else parsed_intent.entities
+
             # Check if address validation should be triggered first
-            address = parsed_intent.entities.get("address")
+            address = effective_payload.get("address")
             has_utilities = "utilities" in parsed_intent.target_agents
             is_validation_only = parsed_intent.intent == "validate_address"
             
@@ -291,7 +377,7 @@ class MainAgent:
                     source_agent="main",
                     target_agent="utilities",
                     task_type="validate_address",
-                    payload=parsed_intent.entities,
+                    payload=effective_payload,
                     timeout_seconds=self.config.task_timeout,
                 )
                 
@@ -345,7 +431,7 @@ class MainAgent:
                             source_agent="main",
                             target_agent="utilities",
                             task_type=task_type,
-                            payload=parsed_intent.entities,
+                            payload=effective_payload,
                             timeout_seconds=self.config.task_timeout,
                         )
                         
@@ -372,7 +458,7 @@ class MainAgent:
                     source_agent="main",
                     target_agent=agent_name,
                     task_type=task_type,
-                    payload=parsed_intent.entities,
+                    payload=effective_payload,
                     timeout_seconds=self.config.task_timeout,
                 )
 

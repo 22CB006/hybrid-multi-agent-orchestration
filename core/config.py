@@ -20,8 +20,13 @@ class Config(BaseSettings):
     )
     redis_db: int = Field(default=0, description="Redis database number")
 
-    # Gemini Configuration
-    gemini_api_key: str = Field(..., description="Gemini API key for LLM parsing")
+    # Gemini Configuration (optional — Mode 2 can run with keyword fallback only)
+    gemini_api_key: Optional[str] = Field(default=None, description="Gemini API key for LLM parsing (optional)")
+
+    # OpenRouter Configuration (Mode 3 — DeepSeek v3.2 routing)
+    openrouter_api_key: Optional[str] = Field(
+        default=None, description="OpenRouter API key for DeepSeek v3.2 routing (Mode 3)"
+    )
     gemini_model: str = Field(
         default="gemini-2.0-flash", description="Gemini model name"
     )
@@ -123,10 +128,6 @@ class Config(BaseSettings):
         Raises:
             ValueError: If configuration is invalid
         """
-        # Check required fields
-        if not self.gemini_api_key:
-            raise ValueError("GEMINI_API_KEY is required but not set")
-
         # Validate Redis connection parameters
         if not self.redis_host:
             raise ValueError("REDIS_HOST cannot be empty")

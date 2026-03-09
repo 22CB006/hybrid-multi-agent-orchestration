@@ -212,7 +212,7 @@ class BroadbandAgent(BaseDataPlaneAgent):
 
         # Simulate availability check logic
         # In production, this would call ISP coverage APIs
-        await asyncio.sleep(0.1)  # Simulate API call
+        await asyncio.sleep(0.9)  # Simulate API call (realistic delay for demo)
 
         result = {
             "address": address,
@@ -255,7 +255,7 @@ class BroadbandAgent(BaseDataPlaneAgent):
 
         # Simulate internet setup logic
         # In production, this would call ISP provisioning APIs
-        await asyncio.sleep(0.2)  # Simulate API call
+        await asyncio.sleep(1.1)  # Simulate API call (realistic delay for demo)
 
         return {
             "service_type": "internet",

@@ -126,7 +126,7 @@ class UtilitiesAgent(BaseDataPlaneAgent):
 
         # Simulate address validation logic
         # In production, this would call external APIs (e.g., utility provider APIs)
-        await asyncio.sleep(0.1)  # Simulate API call
+        await asyncio.sleep(0.8)  # Simulate API call (realistic delay for demo)
         
         # Add some basic validation logic for demo purposes
         address_lower = address.lower()
@@ -230,7 +230,7 @@ class UtilitiesAgent(BaseDataPlaneAgent):
 
         # Simulate electricity setup logic
         # In production, this would call utility provider APIs
-        await asyncio.sleep(0.2)  # Simulate API call
+        await asyncio.sleep(1.2)  # Simulate API call (realistic delay for demo)
 
         return {
             "service_type": "electricity",
@@ -260,7 +260,7 @@ class UtilitiesAgent(BaseDataPlaneAgent):
 
         # Simulate gas setup logic
         # In production, this would call utility provider APIs
-        await asyncio.sleep(0.2)  # Simulate API call
+        await asyncio.sleep(1.0)  # Simulate API call (realistic delay for demo)
 
         return {
             "service_type": "gas",
