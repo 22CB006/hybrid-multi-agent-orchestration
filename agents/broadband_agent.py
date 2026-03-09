@@ -60,6 +60,72 @@ class BroadbandAgent(BaseDataPlaneAgent):
             config: System configuration
         """
         super().__init__(agent_name="broadband", config=config)
+        
+        # Store validated addresses received from Utilities Agent
+        self.validated_addresses = {}
+
+    async def start(self) -> None:
+        """Start Broadband Agent with additional peer communication subscriptions."""
+        # Call parent start method
+        await super().start()
+        
+        # Subscribe to address validation events from Utilities Agent (peer communication)
+        await self.bus.subscribe(
+            "agent.broadband.address_validated",
+            self.handle_address_validated
+        )
+        
+        self.logger.info(
+            "Subscribed to peer communication channel: agent.broadband.address_validated"
+        )
+
+    async def handle_address_validated(self, event) -> None:
+        """Handle address validation event from Utilities Agent.
+        
+        This demonstrates direct peer-to-peer communication:
+        - Utilities Agent validates address
+        - Publishes directly to this channel
+        - Broadband Agent receives without Main Agent routing
+        
+        Args:
+            event: AddressValidated event from Utilities Agent
+        """
+        from core.schemas import AddressValidated
+        
+        # RedisBus deserializes as BaseEvent — re-parse to correct type
+        if not isinstance(event, AddressValidated):
+            try:
+                event = AddressValidated(**event.model_dump())
+            except Exception as e:
+                self.logger.warning(
+                    f"Could not parse AddressValidated event: {e}",
+                    event_type=type(event).__name__,
+                )
+                return
+        
+        self.logger.info(
+            f"📥 Received address validation from Utilities Agent (direct peer communication)",
+            correlation_id=event.correlation_id,
+            address=event.address,
+            electricity_available=event.electricity_available,
+            gas_available=event.gas_available,
+            service_area=event.service_area,
+        )
+        
+        # Store validation result for use in broadband availability checks
+        self.validated_addresses[event.address] = {
+            "electricity_available": event.electricity_available,
+            "gas_available": event.gas_available,
+            "service_area": event.service_area,
+            "estimated_connection_days": event.estimated_connection_days,
+            "validation_timestamp": event.validation_timestamp,
+            "validated_by": event.source_agent,
+        }
+        
+        self.logger.debug(
+            f"💾 Stored validation result for address: {event.address}",
+            total_validated_addresses=len(self.validated_addresses),
+        )
 
     async def execute_task(self, request: TaskRequest) -> dict:
         """Execute broadband-specific task logic.
@@ -133,11 +199,22 @@ class BroadbandAgent(BaseDataPlaneAgent):
         if not address:
             raise ValueError("Address is required for availability check")
 
+        # Check if we have validation data from Utilities Agent (peer communication)
+        utilities_validation = self.validated_addresses.get(address)
+        
+        if utilities_validation:
+            self.logger.info(
+                f"🔍 Using address validation from Utilities Agent (received via peer communication)",
+                address=address,
+                service_area=utilities_validation.get("service_area"),
+                validated_by=utilities_validation.get("validated_by"),
+            )
+
         # Simulate availability check logic
         # In production, this would call ISP coverage APIs
         await asyncio.sleep(0.1)  # Simulate API call
 
-        return {
+        result = {
             "address": address,
             "fiber_available": True,
             "cable_available": True,
@@ -146,6 +223,18 @@ class BroadbandAgent(BaseDataPlaneAgent):
             "providers": ["FastNet", "CableLink", "FiberPro"],
             "installation_required": True,
         }
+        
+        # Enhance result with utilities validation data if available
+        if utilities_validation:
+            result["utilities_validated"] = True
+            result["service_area"] = utilities_validation.get("service_area")
+            result["electricity_available"] = utilities_validation.get("electricity_available")
+            result["gas_available"] = utilities_validation.get("gas_available")
+            result["estimated_utilities_connection_days"] = utilities_validation.get("estimated_connection_days")
+        else:
+            result["utilities_validated"] = False
+        
+        return result
 
     async def _setup_internet(self, payload: dict) -> dict:
         """Initiate internet service setup.

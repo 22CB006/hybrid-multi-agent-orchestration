@@ -1,7 +1,10 @@
 """Policy enforcement for multi-agent communication.
 
 Validates events against defined policies:
-- Channel Isolation: Prevents agents from publishing to other agents' input channels
+- Selective Channel Isolation: Prevents agents from publishing to other agents' 
+  input channels (task_request, command, etc.) while allowing whitelisted 
+  peer-to-peer data channels (address_validated, etc.). Main Agent can publish 
+  to any channel as the system orchestrator.
 - Rate Limiting: Enforces maximum event rate per correlation_id
 
 Violations are logged and published as PolicyViolation events.
@@ -65,6 +68,17 @@ class PolicyEnforcer:
         # Redis keys
         self.rate_limit_key_prefix = "policy:rate_limit:"
         self.violation_history_key = "policy:violations"
+        
+        # Allowed peer-to-peer communication channels
+        # Format: {source_agent: [allowed_target_channels]}
+        self.allowed_peer_channels = {
+            "utilities": [
+                "agent.broadband.address_validated",  # Utilities can share validation with Broadband
+            ],
+            "broadband": [
+                "agent.utilities.address_validated",  # Broadband can share validation with Utilities
+            ],
+        }
 
     async def enforce_policies(
         self, event: BaseEvent, channel: str
@@ -152,6 +166,17 @@ class PolicyEnforcer:
 
         # Check if agent is publishing to its own channel
         if channel_agent != event.source_agent:
+            # EXEMPTION 2: Check if this is an allowed peer-to-peer channel
+            allowed_channels = self.allowed_peer_channels.get(event.source_agent, [])
+            if channel in allowed_channels:
+                self.logger.debug(
+                    f"Allowed peer communication: {event.source_agent} → {channel}",
+                    correlation_id=event.correlation_id,
+                    source_agent=event.source_agent,
+                    target_channel=channel,
+                )
+                return True, None
+            
             # Check if this is a direct input channel access (e.g., "request")
             # Input channels typically use patterns like "task_request", "request", etc.
             input_channel_patterns = ["request", "task_request", "command", "input"]
@@ -160,7 +185,7 @@ class PolicyEnforcer:
                 reason = (
                     f"Channel isolation violation: Agent '{event.source_agent}' "
                     f"attempted to publish to '{channel_agent}' input channel '{channel}'. "
-                    f"Agents must only publish to their own output channels."
+                    f"Agents must only publish to their own output channels or allowed peer channels."
                 )
                 self.logger.warning(
                     reason,

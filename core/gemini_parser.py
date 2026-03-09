@@ -38,6 +38,9 @@ class GeminiParser:
     intelligent routing in the multi-agent system.
     """
 
+    # Class-level counter to track total API calls across all instances
+    _total_api_calls = 0
+
     def __init__(
         self,
         api_key: str,
@@ -58,6 +61,16 @@ class GeminiParser:
         self.model_name = model
         self.timeout_seconds = timeout_seconds
         self.logger = logger or StructuredLogger("gemini_parser")
+        self.instance_api_calls = 0  # Instance-level counter
+
+        print(f"\n{'='*80}")
+        print(f"🔧 GEMINI PARSER INITIALIZED")
+        print(f"{'='*80}")
+        print(f"   Model: {self.model_name}")
+        print(f"   API Key: {self.api_key[:20]}...{self.api_key[-10:]}")
+        print(f"   Timeout: {self.timeout_seconds}s")
+        print(f"   Total API Calls (All Instances): {GeminiParser._total_api_calls}")
+        print(f"{'='*80}\n")
 
         # Configure Gemini API
         genai.configure(api_key=self.api_key)
@@ -151,6 +164,15 @@ Rules:
             ValidationError: If response doesn't match schema
             ValueError: If parsing fails for other reasons
         """
+        print(f"\n{'='*80}")
+        print(f"📥 PARSE_INPUT CALLED")
+        print(f"{'='*80}")
+        print(f"   Correlation ID: {correlation_id}")
+        print(f"   User Input: {user_input}")
+        print(f"   Input Length: {len(user_input)} chars")
+        print(f"   Agent Capabilities: {list(agent_capabilities.keys()) if agent_capabilities else 'None'}")
+        print(f"{'='*80}\n")
+        
         self.logger.info(
             f"Parsing user input: {user_input[:100]}...",
             correlation_id=correlation_id,
@@ -161,14 +183,27 @@ Rules:
             # Construct prompt with dynamic agent capabilities
             prompt = self._construct_prompt(user_input, agent_capabilities)
 
+            print(f"🔵 ABOUT TO CALL GEMINI API")
+            print(f"   Timeout: {self.timeout_seconds}s")
+            print(f"   Model: {self.model_name}\n")
+
             # Call Gemini API with timeout
             response = await asyncio.wait_for(
                 self._call_gemini_api(prompt, correlation_id),
                 timeout=self.timeout_seconds,
             )
 
+            print(f"✅ GEMINI API RESPONSE RECEIVED")
+            print(f"   Response Length: {len(response)} chars")
+            print(f"   Response Preview: {response[:200]}...\n")
+
             # Parse and validate response
             parsed_intent = self._validate_response(response, correlation_id)
+
+            print(f"✅ PARSING SUCCESSFUL")
+            print(f"   Intent: {parsed_intent.intent}")
+            print(f"   Target Agents: {parsed_intent.target_agents}")
+            print(f"   Confidence: {parsed_intent.confidence}\n")
 
             self.logger.info(
                 "Successfully parsed user input",
@@ -181,6 +216,7 @@ Rules:
             return parsed_intent
 
         except asyncio.TimeoutError:
+            print(f"❌ TIMEOUT ERROR - API took longer than {self.timeout_seconds}s\n")
             self.logger.error(
                 f"Gemini API call timed out after {self.timeout_seconds}s",
                 correlation_id=correlation_id,
@@ -190,6 +226,8 @@ Rules:
             )
 
         except ValidationError as e:
+            print(f"❌ VALIDATION ERROR - Response doesn't match schema")
+            print(f"   Error: {str(e)}\n")
             self.logger.error(
                 "Response validation failed",
                 correlation_id=correlation_id,
@@ -198,6 +236,9 @@ Rules:
             raise ValidationError(f"Invalid response schema from Gemini: {e}") from e
 
         except Exception as e:
+            print(f"❌ UNEXPECTED ERROR")
+            print(f"   Type: {type(e).__name__}")
+            print(f"   Message: {str(e)}\n")
             self.logger.error(
                 "Parsing failed with unexpected error",
                 correlation_id=correlation_id,
@@ -221,6 +262,28 @@ Rules:
             Exception: If API call fails
         """
         try:
+            # Increment counters
+            GeminiParser._total_api_calls += 1
+            self.instance_api_calls += 1
+            
+            print(f"\n{'*'*80}")
+            print(f"🚀 GEMINI API CALL #{GeminiParser._total_api_calls} (Instance: #{self.instance_api_calls})")
+            print(f"{'*'*80}")
+            print(f"   Correlation ID: {correlation_id}")
+            print(f"   Model: {self.model_name}")
+            print(f"   Prompt Length: {len(prompt)} chars")
+            print(f"   Timestamp: {asyncio.get_event_loop().time()}")
+            print(f"{'*'*80}\n")
+            
+            # Log API call for tracking
+            self.logger.info(
+                f"🔵 GEMINI API CALL #{GeminiParser._total_api_calls} INITIATED",
+                correlation_id=correlation_id,
+                model=self.model_name,
+                total_calls=GeminiParser._total_api_calls,
+                instance_calls=self.instance_api_calls,
+            )
+            
             # Run synchronous Gemini call in thread pool to avoid blocking
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(
@@ -228,16 +291,40 @@ Rules:
             )
 
             if not response or not response.text:
+                print(f"❌ EMPTY RESPONSE FROM GEMINI API\n")
                 raise ValueError("Empty response from Gemini API")
+
+            print(f"{'*'*80}")
+            print(f"✅ GEMINI API CALL #{GeminiParser._total_api_calls} COMPLETED")
+            print(f"{'*'*80}")
+            print(f"   Response Length: {len(response.text)} chars")
+            print(f"   Response Preview: {response.text[:150]}...")
+            print(f"{'*'*80}\n")
 
             return response.text.strip()
 
         except Exception as e:
+            print(f"\n{'!'*80}")
+            print(f"❌ GEMINI API CALL #{GeminiParser._total_api_calls} FAILED")
+            print(f"{'!'*80}")
+            print(f"   Error Type: {type(e).__name__}")
+            print(f"   Error Message: {str(e)}")
+            print(f"   Correlation ID: {correlation_id}")
+            
+            # Check for rate limit error
+            if "429" in str(e) or "quota" in str(e).lower() or "rate" in str(e).lower():
+                print(f"   ⚠️  RATE LIMIT ERROR DETECTED!")
+                print(f"   Total API calls made: {GeminiParser._total_api_calls}")
+                print(f"   This instance calls: {self.instance_api_calls}")
+            
+            print(f"{'!'*80}\n")
+            
             self.logger.error(
                 "Gemini API call failed",
                 correlation_id=correlation_id,
                 error_type=type(e).__name__,
                 error_message=str(e),
+                total_calls=GeminiParser._total_api_calls,
             )
             raise
 

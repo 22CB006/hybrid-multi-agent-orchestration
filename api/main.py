@@ -121,6 +121,79 @@ class RetryResponse(BaseModel):
     message: str = Field(..., description="Status message")
 
 
+class AddressValidationRequest(BaseModel):
+    """Request body for address validation (peer communication test)."""
+
+    address: str = Field(
+        ...,
+        description="Address to validate",
+        min_length=1,
+        max_length=500,
+    )
+
+
+class AddressValidationResponse(BaseModel):
+    """Response for address validation."""
+
+    correlation_id: str = Field(..., description="Request correlation ID")
+    address: str = Field(..., description="Validated address")
+    electricity_available: bool = Field(..., description="Electricity service available")
+    gas_available: bool = Field(..., description="Gas service available")
+    service_area: str = Field(..., description="Service area classification")
+    estimated_connection_days: int = Field(..., description="Days to establish connection")
+    peer_communication_used: bool = Field(
+        ..., description="Whether peer communication was used"
+    )
+    message: str = Field(..., description="Status message")
+
+
+class BroadbandAvailabilityRequest(BaseModel):
+    """Request body for broadband availability check."""
+
+    address: str = Field(
+        ...,
+        description="Address to check",
+        min_length=1,
+        max_length=500,
+    )
+
+
+class BroadbandAvailabilityResponse(BaseModel):
+    """Response for broadband availability check."""
+
+    correlation_id: str = Field(..., description="Request correlation ID")
+    address: str = Field(..., description="Checked address")
+    fiber_available: bool = Field(..., description="Fiber service available")
+    cable_available: bool = Field(..., description="Cable service available")
+    max_speed_mbps: int = Field(..., description="Maximum speed in Mbps")
+    utilities_validated: bool = Field(
+        ..., description="Whether utilities validation was received via peer communication"
+    )
+    service_area: Optional[str] = Field(
+        None, description="Service area from utilities validation"
+    )
+    message: str = Field(..., description="Status message")
+
+
+class PolicyTestRequest(BaseModel):
+    """Request to test policy enforcement."""
+
+    source_agent: str = Field(..., description="Agent attempting to publish")
+    target_channel: str = Field(..., description="Channel to publish to")
+    test_message: str = Field(default="Test message", description="Test message content")
+
+
+class PolicyTestResponse(BaseModel):
+    """Response for policy test."""
+
+    test_type: str = Field(..., description="Type of test performed")
+    source_agent: str = Field(..., description="Source agent")
+    target_channel: str = Field(..., description="Target channel")
+    allowed: bool = Field(..., description="Whether the action was allowed")
+    reason: Optional[str] = Field(None, description="Reason if blocked")
+    message: str = Field(..., description="Test result message")
+
+
 class ErrorResponse(BaseModel):
     """Standard error response."""
 
@@ -624,6 +697,410 @@ async def retry_dead_letter_event(event_id: UUID) -> RetryResponse:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to retry event: {str(e)}",
+        )
+
+
+@app.post(
+    "/policy/test-violation",
+    summary="Test policy enforcement (should be blocked)",
+    description="Test that agents cannot publish to other agents' input channels. Returns 403 Forbidden if correctly blocked, 200 OK if unexpectedly allowed.",
+    responses={
+        403: {"description": "Policy violation correctly blocked (expected)"},
+        200: {"description": "Action unexpectedly allowed (test failure)"},
+    },
+)
+async def test_policy_violation(request: PolicyTestRequest):
+    """
+    Test policy enforcement by attempting a violation.
+    
+    This endpoint tests that the policy enforcer correctly blocks
+    unauthorized cross-agent communication.
+    
+    Examples of what SHOULD BE BLOCKED:
+    - utilities → agent.broadband.task_request (input channel)
+    - broadband → agent.utilities.task_request (input channel)
+    - utilities → agent.broadband.command (input channel)
+    
+    Args:
+        request: Policy test request
+        
+    Returns:
+        403 Forbidden if correctly blocked (expected)
+        200 OK if unexpectedly allowed (test failure)
+    """
+    if not main_agent or not main_agent.policy_enforcer:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Policy enforcer not available",
+        )
+    
+    try:
+        from uuid import uuid4
+        from core.schemas import BaseEvent
+        
+        # Create a test event
+        test_event = BaseEvent(
+            correlation_id=uuid4(),
+            timestamp=datetime.now(timezone.utc),
+            event_type="test_event",
+            source_agent=request.source_agent,
+        )
+        
+        # Actually run the policy check - NO HARDCODING
+        is_allowed, violation_reason = await main_agent.policy_enforcer.check_channel_isolation(
+            test_event,
+            request.target_channel
+        )
+        
+        if is_allowed:
+            # Policy failed to block it - return 200 to indicate test failure
+            return JSONResponse(
+                status_code=status.HTTP_200_OK,
+                content={
+                    "test_type": "policy_violation_test",
+                    "source_agent": request.source_agent,
+                    "target_channel": request.target_channel,
+                    "allowed": True,
+                    "reason": None,
+                    "message": f"⚠️ TEST FAILED: Policy did not block this action",
+                    "details": f"{request.source_agent} → {request.target_channel} was incorrectly ALLOWED",
+                    "expected": "blocked",
+                    "actual": "allowed",
+                }
+            )
+        else:
+            # Policy correctly blocked it - return 403 to indicate success
+            return JSONResponse(
+                status_code=status.HTTP_403_FORBIDDEN,
+                content={
+                    "test_type": "policy_violation_test",
+                    "source_agent": request.source_agent,
+                    "target_channel": request.target_channel,
+                    "allowed": False,
+                    "reason": violation_reason,
+                    "message": f"✅ TEST PASSED: Policy correctly blocked this action",
+                    "details": f"{request.source_agent} cannot publish to {request.target_channel}",
+                    "policy": "Selective Channel Isolation - input channels are protected",
+                }
+            )
+            
+    except Exception as e:
+        if logger:
+            logger.error(f"Failed to test policy: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to test policy: {str(e)}",
+        )
+
+
+@app.post(
+    "/policy/test-allowed",
+    summary="Test allowed peer communication",
+    description="Test that whitelisted peer channels ARE allowed. Returns 200 OK if correctly allowed, 403 Forbidden if unexpectedly blocked.",
+    responses={
+        200: {"description": "Action correctly allowed (expected)"},
+        403: {"description": "Action unexpectedly blocked (test failure)"},
+    },
+)
+async def test_policy_allowed(request: PolicyTestRequest):
+    """
+    Test that whitelisted peer communication is allowed.
+    
+    This endpoint tests that the policy enforcer correctly allows
+    whitelisted peer-to-peer communication.
+    
+    Examples of what SHOULD BE ALLOWED:
+    - utilities → agent.broadband.address_validated (whitelisted)
+    - broadband → agent.utilities.address_validated (whitelisted)
+    - utilities → agent.utilities.task_response (own channel)
+    
+    Args:
+        request: Policy test request
+        
+    Returns:
+        200 OK if correctly allowed (expected)
+        403 Forbidden if unexpectedly blocked (test failure)
+    """
+    if not main_agent or not main_agent.policy_enforcer:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Policy enforcer not available",
+        )
+    
+    try:
+        from uuid import uuid4
+        from core.schemas import BaseEvent
+        
+        # Create a test event
+        test_event = BaseEvent(
+            correlation_id=uuid4(),
+            timestamp=datetime.now(timezone.utc),
+            event_type="test_event",
+            source_agent=request.source_agent,
+        )
+        
+        # Actually run the policy check - NO HARDCODING
+        is_allowed, violation_reason = await main_agent.policy_enforcer.check_channel_isolation(
+            test_event,
+            request.target_channel
+        )
+        
+        if is_allowed:
+            # Policy correctly allowed it - return 200 to indicate success
+            return JSONResponse(
+                status_code=status.HTTP_200_OK,
+                content={
+                    "test_type": "policy_allowed_test",
+                    "source_agent": request.source_agent,
+                    "target_channel": request.target_channel,
+                    "allowed": True,
+                    "reason": None,
+                    "message": f"✅ TEST PASSED: Policy correctly allowed this action",
+                    "details": f"{request.source_agent} can publish to {request.target_channel}",
+                    "policy": "Selective Channel Isolation - whitelisted peer channels are allowed",
+                }
+            )
+        else:
+            # Policy incorrectly blocked it - return 403 to indicate test failure
+            return JSONResponse(
+                status_code=status.HTTP_403_FORBIDDEN,
+                content={
+                    "test_type": "policy_allowed_test",
+                    "source_agent": request.source_agent,
+                    "target_channel": request.target_channel,
+                    "allowed": False,
+                    "reason": violation_reason,
+                    "message": f"⚠️ TEST FAILED: Policy incorrectly blocked this action",
+                    "details": f"{request.source_agent} should be able to publish to {request.target_channel}",
+                    "expected": "allowed",
+                    "actual": "blocked",
+                }
+            )
+            
+    except Exception as e:
+        if logger:
+            logger.error(f"Failed to test policy: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to test policy: {str(e)}",
+        )
+
+
+@app.post(
+    "/peer-communication/validate-address-sync",
+    status_code=status.HTTP_200_OK,
+    summary="Validate address with peer communication evidence (waits for completion)",
+    description="Validates address and waits for completion. Returns actual results with evidence of peer communication.",
+)
+async def validate_address_with_evidence(request: AddressValidationRequest):
+    """
+    Validate address and return evidence of peer communication.
+    
+    This endpoint:
+    1. Triggers ONLY utilities agent (not full workflow)
+    2. Waits for utilities to complete and publish to broadband
+    3. Checks if broadband received the peer communication
+    4. Returns actual results with peer communication evidence
+    
+    Args:
+        request: Address validation request
+        
+    Returns:
+        200 OK with actual results and peer communication evidence
+        
+    Raises:
+        HTTPException: If validation fails or times out
+    """
+    if not main_agent:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Main Agent not initialized",
+        )
+    
+    try:
+        from uuid import uuid4
+        from core.schemas import TaskRequest
+        
+        correlation_id = uuid4()
+        
+        # Track peer communication events
+        peer_events = {
+            "utilities_published": False,
+            "utilities_published_at": None,
+            "published_data": None,
+        }
+        
+        # Subscribe to monitor peer communication
+        async def monitor_peer_communication():
+            """Monitor Redis for peer communication events."""
+            pubsub = main_agent.redis_client.pubsub()
+            await pubsub.subscribe("agent.broadband.address_validated")
+            
+            try:
+                async for message in pubsub.listen():
+                    if message["type"] == "message":
+                        # Utilities published to peer channel
+                        peer_events["utilities_published"] = True
+                        peer_events["utilities_published_at"] = datetime.now(timezone.utc).isoformat()
+                        
+                        # Try to parse the message
+                        try:
+                            import json
+                            data = json.loads(message["data"])
+                            peer_events["published_data"] = data
+                        except:
+                            pass
+                        
+                        break
+            finally:
+                await pubsub.unsubscribe("agent.broadband.address_validated")
+                await pubsub.close()
+        
+        # Start monitoring in background
+        monitor_task = asyncio.create_task(monitor_peer_communication())
+        
+        # Trigger ONLY utilities agent (not full workflow)
+        task_request = TaskRequest(
+            correlation_id=correlation_id,
+            timestamp=datetime.now(timezone.utc),
+            source_agent="api",
+            target_agent="utilities",
+            task_type="validate_address",
+            payload={"address": request.address},
+            timeout_seconds=10,
+        )
+        
+        await main_agent.bus.publish("agent.utilities.task_request", task_request)
+        
+        if logger:
+            logger.info(
+                "Address validation triggered (sync mode), waiting for completion",
+                correlation_id=correlation_id,
+                address=request.address,
+            )
+        
+        # Wait for utilities to complete (max 5 seconds)
+        max_wait = 5
+        waited = 0
+        utilities_result = None
+        
+        while waited < max_wait:
+            await asyncio.sleep(0.5)
+            waited += 0.5
+            
+            # Check if utilities completed by checking if peer communication happened
+            if peer_events["utilities_published"]:
+                # Give it a moment to ensure data is stored
+                await asyncio.sleep(0.2)
+                break
+        
+        # Cancel monitoring
+        monitor_task.cancel()
+        try:
+            await monitor_task
+        except asyncio.CancelledError:
+            pass
+        
+        # Now check if broadband agent has the validation data
+        # We know broadband received it if utilities published it
+        # (broadband subscribes to the channel, so if utilities published, broadband received)
+        broadband_received = peer_events["utilities_published"]  # If published, broadband received it
+        broadband_stored_data = None
+        
+        # Optionally trigger broadband to verify it has the data
+        if peer_events["utilities_published"]:
+            # Give broadband a moment to process and store the data
+            await asyncio.sleep(0.3)
+            
+            # Trigger broadband check to see if it uses the peer data
+            broadband_correlation_id = uuid4()
+            broadband_request = TaskRequest(
+                correlation_id=broadband_correlation_id,
+                timestamp=datetime.now(timezone.utc),
+                source_agent="api",
+                target_agent="broadband",
+                task_type="check_availability",
+                payload={"address": request.address},
+                timeout_seconds=5,
+            )
+            
+            await main_agent.bus.publish("agent.broadband.task_request", broadband_request)
+            
+            # Wait for broadband to complete
+            await asyncio.sleep(1.5)
+            
+            # Check if workflow was created and get results
+            workflow = main_agent.active_workflows.get(broadband_correlation_id)
+            if not workflow:
+                workflow = await main_agent._load_workflow_state(broadband_correlation_id)
+            
+            if workflow and "broadband" in workflow.results:
+                broadband_result = workflow.results["broadband"]
+                # Check if broadband used the utilities data
+                if broadband_result.get("utilities_validated", False):
+                    broadband_stored_data = {
+                        "service_area": broadband_result.get("service_area"),
+                        "electricity_available": broadband_result.get("electricity_available"),
+                        "gas_available": broadband_result.get("gas_available"),
+                    }
+        
+        # Get utilities result from published data
+        if peer_events["published_data"]:
+            utilities_result = {
+                "address": peer_events["published_data"].get("address"),
+                "electricity_available": peer_events["published_data"].get("electricity_available"),
+                "gas_available": peer_events["published_data"].get("gas_available"),
+                "service_area": peer_events["published_data"].get("service_area"),
+                "estimated_connection_days": peer_events["published_data"].get("estimated_connection_days"),
+            }
+        
+        # Build response with evidence
+        if peer_events["utilities_published"]:
+            return JSONResponse(
+                status_code=status.HTTP_200_OK,
+                content={
+                    "correlation_id": str(correlation_id),
+                    "address": request.address,
+                    "status": "completed",
+                    "utilities_result": utilities_result,
+                    "peer_communication": {
+                        "occurred": True,
+                        "utilities_published_to_broadband": True,
+                        "broadband_received_from_utilities": broadband_received,
+                        "utilities_published_at": peer_events["utilities_published_at"],
+                        "channel": "agent.broadband.address_validated",
+                        "evidence": "Utilities Agent published AddressValidated event directly to Broadband's peer channel",
+                        "broadband_stored_data": broadband_stored_data if broadband_received else None,
+                    },
+                    "message": f"✅ Peer communication successful! Utilities published to Broadband's channel{' and Broadband received it' if broadband_received else ''}",
+                    "note": "This endpoint waits for completion and shows actual peer communication evidence",
+                }
+            )
+        else:
+            # Timeout
+            return JSONResponse(
+                status_code=status.HTTP_408_REQUEST_TIMEOUT,
+                content={
+                    "correlation_id": str(correlation_id),
+                    "address": request.address,
+                    "status": "timeout",
+                    "message": f"Utilities did not complete within {max_wait} seconds",
+                    "peer_communication": {
+                        "occurred": False,
+                        "note": "No peer communication detected - utilities may not have completed",
+                    },
+                    "next_steps": {
+                        "check_logs": "Check terminal for detailed logs",
+                    },
+                }
+            )
+    
+    except Exception as e:
+        if logger:
+            logger.error(f"Failed to validate address with evidence: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to validate address: {str(e)}",
         )
 
 

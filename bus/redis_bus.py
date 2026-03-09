@@ -22,6 +22,7 @@ from core.schemas import (
     TaskFailure,
     HealthCheck,
     PolicyViolation,
+    AddressValidated
 )
 from core.logger import StructuredLogger
 
@@ -327,6 +328,7 @@ class RedisBus:
             "task_failure": TaskFailure,
             "health_check": HealthCheck,
             "policy_violation": PolicyViolation,
+            "address_validated": AddressValidated
         }
 
         event_class = event_type_map.get(event_type, BaseEvent)

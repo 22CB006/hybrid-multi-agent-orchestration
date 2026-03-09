@@ -208,7 +208,7 @@ class MainAgent:
         correlation_id = uuid4()
 
         self.logger.info(
-            "Processing user request",
+            "🎯 PARSE_INPUT CALLED - Processing user request",
             correlation_id=correlation_id,
             user_input=user_input,
         )
@@ -243,6 +243,16 @@ class MainAgent:
                     )
                     parsed_intent = self._parse_input_simple(user_input)
 
+            # Log the parsed intent for visibility
+            self.logger.info(
+                "📋 Parsed user intent",
+                correlation_id=correlation_id,
+                intent=parsed_intent.intent,
+                target_agents=parsed_intent.target_agents,
+                entities=parsed_intent.entities,
+                confidence=parsed_intent.confidence,
+            )
+
             # Create workflow state
             workflow = WorkflowState(
                 correlation_id=correlation_id,
@@ -256,12 +266,101 @@ class MainAgent:
             self.active_workflows[correlation_id] = workflow
             await self._save_workflow_state(workflow)
 
+            # Check if address validation should be triggered first
+            address = parsed_intent.entities.get("address")
+            has_utilities = "utilities" in parsed_intent.target_agents
+            is_validation_only = parsed_intent.intent == "validate_address"
+            
+            # Trigger address validation FIRST if:
+            # 1. Address is present in request
+            # 2. Utilities agent is involved
+            # 3. This is NOT already a validation-only request
+            if address and has_utilities and not is_validation_only:
+                self.logger.info(
+                    "🏠 Address detected with service setup request - validating address first",
+                    correlation_id=correlation_id,
+                    address=address,
+                    original_intent=parsed_intent.intent,
+                )
+                
+                # Send validate_address task to utilities FIRST
+                validation_request = TaskRequest(
+                    correlation_id=correlation_id,
+                    timestamp=datetime.now(timezone.utc),
+                    event_type="task_request",
+                    source_agent="main",
+                    target_agent="utilities",
+                    task_type="validate_address",
+                    payload=parsed_intent.entities,
+                    timeout_seconds=self.config.task_timeout,
+                )
+                
+                await self.bus.publish("agent.utilities.task_request", validation_request)
+                
+                self.logger.info(
+                    "📤 Published address validation request to utilities (peer communication will trigger)",
+                    correlation_id=correlation_id,
+                    address=address,
+                )
+                
+                # Wait 0.5s for utilities to validate and publish to broadband peer channel
+                await asyncio.sleep(0.5)
+                
+                self.logger.info(
+                    "✅ Address validation complete, proceeding with service setup tasks",
+                    correlation_id=correlation_id,
+                )
+
             # Publish TaskRequest to each target agent
             for agent_name in parsed_intent.target_agents:
                 # Map intent to agent-specific task type dynamically
                 task_type = parsed_intent.intent
                 agent_info = capabilities.get(agent_name)
-                if agent_info and agent_info.task_types:
+                
+                # Special handling for utilities if we already sent validate_address
+                if agent_name == "utilities" and address and has_utilities and not is_validation_only:
+                    # We already sent validate_address, now send the actual setup tasks
+                    # Collect all setup tasks based on keywords in user input
+                    tasks_to_send = []
+                    
+                    if "electricity" in user_input.lower() or "power" in user_input.lower():
+                        tasks_to_send.append("setup_electricity")
+                    if "gas" in user_input.lower():
+                        tasks_to_send.append("setup_gas")
+                    
+                    if not tasks_to_send:
+                        # Fallback: use first non-validation task type
+                        if agent_info and agent_info.task_types:
+                            for tt in agent_info.task_types:
+                                if tt != "validate_address":
+                                    tasks_to_send.append(tt)
+                                    break
+                    
+                    # Send each task separately
+                    for task_type in tasks_to_send:
+                        task_request = TaskRequest(
+                            correlation_id=correlation_id,
+                            timestamp=datetime.now(timezone.utc),
+                            event_type="task_request",
+                            source_agent="main",
+                            target_agent="utilities",
+                            task_type=task_type,
+                            payload=parsed_intent.entities,
+                            timeout_seconds=self.config.task_timeout,
+                        )
+                        
+                        await self.bus.publish("agent.utilities.task_request", task_request)
+                        
+                        self.logger.info(
+                            f"⚡ Published task request to utilities",
+                            correlation_id=correlation_id,
+                            agent="utilities",
+                            task_type=task_type,
+                        )
+                    
+                    # Skip the normal publish below for utilities
+                    continue
+                elif agent_info and agent_info.task_types:
                     # Use first registered task type as default if intent doesn't match
                     if task_type not in agent_info.task_types:
                         task_type = agent_info.task_types[0]

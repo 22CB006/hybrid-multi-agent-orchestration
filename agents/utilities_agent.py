@@ -125,16 +125,92 @@ class UtilitiesAgent(BaseDataPlaneAgent):
             raise ValueError("Address is required for validation")
 
         # Simulate address validation logic
-        # In production, this would call external APIs
+        # In production, this would call external APIs (e.g., utility provider APIs)
         await asyncio.sleep(0.1)  # Simulate API call
+        
+        # Add some basic validation logic for demo purposes
+        address_lower = address.lower()
+        
+        # Simulate different service availability based on address
+        # In production, this would query real utility provider databases
+        
+        # Check if address is in a serviceable area
+        if "rural" in address_lower or "remote" in address_lower:
+            # Rural areas might not have gas service
+            electricity_available = True
+            gas_available = False
+            service_area = "rural"
+            estimated_days = 7  # Takes longer in rural areas
+        elif "downtown" in address_lower or "metro" in address_lower or "city" in address_lower:
+            # Urban areas have full service
+            electricity_available = True
+            gas_available = True
+            service_area = "metro"
+            estimated_days = 3
+        elif "suburb" in address_lower:
+            # Suburban areas
+            electricity_available = True
+            gas_available = True
+            service_area = "suburban"
+            estimated_days = 5
+        elif "test" in address_lower or "invalid" in address_lower:
+            # Test invalid addresses
+            electricity_available = False
+            gas_available = False
+            service_area = "unavailable"
+            estimated_days = 0
+        else:
+            # Default: assume metro area
+            electricity_available = True
+            gas_available = True
+            service_area = "metro"
+            estimated_days = 3
 
-        return {
+        validation_result = {
             "address": address,
-            "electricity_available": True,
-            "gas_available": True,
-            "service_area": "metro",
-            "estimated_connection_days": 3,
+            "electricity_available": electricity_available,
+            "gas_available": gas_available,
+            "service_area": service_area,
+            "estimated_connection_days": estimated_days,
         }
+        
+        # DIRECT PEER COMMUNICATION: Publish validation result to Broadband Agent
+        # This enables Broadband to receive validation without going through Main Agent
+        try:
+            from core.schemas import AddressValidated
+            from uuid import uuid4
+            from datetime import datetime, timezone
+            
+            address_validated_event = AddressValidated(
+                correlation_id=uuid4(),
+                timestamp=datetime.now(timezone.utc),
+                source_agent=self.agent_name,
+                address=address,
+                electricity_available=validation_result["electricity_available"],
+                gas_available=validation_result["gas_available"],
+                service_area=validation_result["service_area"],
+                estimated_connection_days=validation_result["estimated_connection_days"],
+            )
+            
+            # Publish directly to Broadband's address_validated channel
+            await self.bus.publish(
+                "agent.broadband.address_validated",
+                address_validated_event
+            )
+            
+            self.logger.info(
+                f"🔄 Published address validation to Broadband Agent (direct peer communication)",
+                correlation_id=address_validated_event.correlation_id,
+                address=address,
+                target_channel="agent.broadband.address_validated",
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"Failed to publish address validation to Broadband: {e}",
+                address=address,
+            )
+        
+        return validation_result
 
     async def _setup_electricity(self, payload: dict) -> dict:
         """Initiate electricity service setup.

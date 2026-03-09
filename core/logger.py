@@ -71,6 +71,24 @@ class StructuredLogger:
         if not self._should_log(level):
             return
 
+        # Check if message contains emojis (for interview visibility)
+        emoji_indicators = ["📋", "🏠", "📤", "🔄", "📥", "💾", "✅", "⚡", "🎯"]
+        has_emoji = any(emoji in message for emoji in emoji_indicators)
+        
+        # If message has emoji, print plain text version FIRST for terminal visibility
+        if has_emoji:
+            plain_parts = [f"{message}"]
+            if correlation_id:
+                plain_parts.append(f"correlation_id: {correlation_id}")
+            # Add important kwargs
+            for key in ["address", "agent", "task_type", "agent_name"]:
+                if key in kwargs:
+                    plain_parts.append(f"{key}: {kwargs[key]}")
+            
+            plain_output = "  ".join(plain_parts)
+            self.output_stream.write(plain_output + "\n")
+            self.output_stream.flush()
+
         # Build log entry with standard fields
         log_entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -95,7 +113,7 @@ class StructuredLogger:
 
         # Serialize to JSON and write to output stream
         try:
-            json_output = json.dumps(log_entry, default=str)
+            json_output = json.dumps(log_entry, default=str, ensure_ascii=False)
             self.output_stream.write(json_output + "\n")
             self.output_stream.flush()
         except Exception as e:

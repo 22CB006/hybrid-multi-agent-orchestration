@@ -358,23 +358,37 @@ All events conform to a shared schema:
 
 The system enforces two concrete policies to maintain communication integrity and system stability:
 
-### Policy 1: Channel Isolation Policy
+### Policy 1: Selective Channel Isolation with Peer Communication
 
-Prevents agents from directly publishing to other agents' input channels, ensuring all task routing goes through the control plane.
+Prevents agents from directly publishing to other agents' **input channels** (task_request, command, etc.) while allowing **whitelisted peer-to-peer data channels** for efficient data sharing. Main Agent can publish to any channel as the system orchestrator.
 
-**Rule**: Agents MUST only publish to their own output channels following the pattern `agent.{source_agent}.{event_type}`
+**Rules**:
+1. Agents can publish to their own channels: `agent.{source_agent}.{event_type}`
+2. Main Agent can publish to any channel (orchestrator privilege)
+3. Agents can publish to whitelisted peer data channels (e.g., `address_validated`)
+4. Agents CANNOT publish to other agents' input channels (e.g., `task_request`)
 
 **Valid Examples**:
 ```
-utilities_agent publishes to: agent.utilities.response ✓
-broadband_agent publishes to: agent.broadband.completed ✓
-main_agent publishes to: agent.utilities.request ✓ (control plane routing)
+utilities_agent publishes to: agent.utilities.task_response ✓ (own channel)
+utilities_agent publishes to: agent.broadband.address_validated ✓ (whitelisted peer channel)
+broadband_agent publishes to: agent.broadband.task_response ✓ (own channel)
+main_agent publishes to: agent.utilities.task_request ✓ (orchestrator privilege)
 ```
 
 **Invalid Examples**:
 ```
-utilities_agent publishes to: agent.broadband.request ✗ (direct agent-to-agent routing)
-broadband_agent publishes to: agent.utilities.request ✗ (bypassing control plane)
+utilities_agent publishes to: agent.broadband.task_request ✗ (input channel blocked)
+broadband_agent publishes to: agent.utilities.command ✗ (input channel blocked)
+utilities_agent publishes to: agent.broadband.custom_data ✗ (not whitelisted)
+```
+
+**Peer Communication Whitelist**:
+```python
+allowed_peer_channels = {
+    "utilities": ["agent.broadband.address_validated"],
+    "broadband": ["agent.utilities.address_validated"],
+}
 ```
 
 **Enforcement**:

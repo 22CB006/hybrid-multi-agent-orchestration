@@ -45,23 +45,27 @@ async def main():
 
     # Handle shutdown
     stop = asyncio.Event()
-    loop = asyncio.get_event_loop()
+    
+    # Set up signal handlers (works on Unix, not Windows)
     import sys
     if sys.platform != "win32":
+        loop = asyncio.get_event_loop()
         for sig_name in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig_name, stop.set)
 
-    # Run server and wait for shutdown
+    # Run server
+    print("[run] Starting API server...")
     server_task = asyncio.create_task(server.serve())
 
-    await stop.wait()
-
-    print("\n[run] Shutting down...")
-    server.should_exit = True
-    await server_task
-    await utilities.shutdown()
-    await broadband.shutdown()
-    print("[run] Shutdown complete")
+    # Wait for shutdown signal or server to stop
+    try:
+        await server_task
+    except KeyboardInterrupt:
+        print("\n[run] Shutting down...")
+        server.should_exit = True
+        await utilities.shutdown()
+        await broadband.shutdown()
+        print("[run] Shutdown complete")
 
 
 if __name__ == "__main__":

@@ -78,6 +78,27 @@ class HealthCheck(BaseEvent):
     uptime_seconds: int = Field(..., description="Time since agent started")
 
 
+class AddressValidated(BaseEvent):
+    """Address validation result shared between agents.
+    
+    This event enables direct peer-to-peer communication:
+    - Utilities Agent validates address and publishes this event
+    - Broadband Agent subscribes and receives validation result directly
+    - No routing through Main Agent required
+    """
+
+    event_type: Literal["address_validated"] = "address_validated"
+    address: str = Field(..., description="Validated address")
+    electricity_available: bool = Field(..., description="Electricity service available")
+    gas_available: bool = Field(..., description="Gas service available")
+    service_area: str = Field(..., description="Service area classification")
+    estimated_connection_days: int = Field(..., description="Days to establish connection")
+    validation_timestamp: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="When validation was performed"
+    )
+
+
 class PolicyViolation(BaseEvent):
     """Policy enforcement violation detected by Main Agent."""
 
@@ -86,3 +107,26 @@ class PolicyViolation(BaseEvent):
     violating_agent: str = Field(..., description="Agent that violated policy")
     violation_details: dict = Field(..., description="Additional context")
     action_taken: str = Field(..., description="Enforcement action applied")
+
+    class AddressValidated(BaseEvent):
+        """Address validation result shared between agents.
+
+        This event enables direct peer-to-peer communication:
+        - Utilities Agent validates address and publishes this event
+        - Broadband Agent subscribes and receives validation result directly
+        - No routing through Main Agent required
+        """
+
+        event_type: Literal["address_validated"] = "address_validated"
+        address: str = Field(..., description="Validated address")
+        electricity_available: bool = Field(..., description="Electricity service available")
+        gas_available: bool = Field(..., description="Gas service available")
+        service_area: str = Field(..., description="Service area classification")
+        estimated_connection_days: int = Field(..., description="Days to establish connection")
+        validation_timestamp: datetime = Field(
+            default_factory=lambda: datetime.now(timezone.utc),
+            description="When validation was performed"
+        )
+
+
+
