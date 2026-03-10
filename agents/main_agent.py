@@ -27,8 +27,7 @@ from bus.redis_bus import RedisBus
 from core.agent_registry import AgentRegistry
 from core.config import Config
 from core.dead_letter_queue import DeadLetterQueue
-from core.gemini_parser import GeminiParser, ParsedIntent
-from core.openrouter_parser import OpenRouterParser
+from core.openrouter_parser import OpenRouterParser, ParsedIntent
 from core.logger import StructuredLogger
 from core.policy_enforcer import PolicyEnforcer
 from core.schemas import (
@@ -108,7 +107,6 @@ class MainAgent:
         self.agent_registry: Optional[AgentRegistry] = None
         self.dead_letter_queue: Optional[DeadLetterQueue] = None
         self.policy_enforcer: Optional[PolicyEnforcer] = None
-        self.gemini_parser: Optional[GeminiParser] = None
         self.openrouter_parser: Optional[OpenRouterParser] = None
 
         # Workflow tracking
@@ -155,34 +153,6 @@ class MainAgent:
                 self.redis_client, self.config, self.logger
             )
 
-            # Initialize Gemini parser (optional — skipped if GEMINI_API_KEY not set)
-            if self.config.gemini_api_key:
-                try:
-                    self.gemini_parser = GeminiParser(
-                        api_key=self.config.gemini_api_key,
-                        model=self.config.gemini_model,
-                        timeout_seconds=self.config.gemini_timeout,
-                        logger=self.logger,
-                    )
-                    self.logger.info("Gemini parser initialized")
-                except Exception as e:
-                    self.logger.warning(f"Gemini parser init failed, will use keyword fallback: {e}")
-                    self.gemini_parser = None
-            else:
-                self.logger.info("GEMINI_API_KEY not set — keyword fallback active for default routing")
-
-
-
-
-
-
-
-
-
-
-
-
-
             # Initialize OpenRouter parser for Mode 3 (DeepSeek v3.2 routing)
             try:
                 openrouter_key = getattr(self.config, "openrouter_api_key", None)
@@ -227,7 +197,7 @@ class MainAgent:
     async def handle_user_request(
         self,
         user_input: str,
-        routing_mode: str = "gemini",
+        routing_mode: str = "keywords",
         payload_override: Optional[dict] = None,
     ) -> UUID:
         """
@@ -243,8 +213,7 @@ class MainAgent:
         Args:
             user_input: Natural language user request
             routing_mode: One of:
-                "gemini"      — Mode 2 default: Gemini LLM with keyword fallback
-                "keywords"    — Mode 2 explicit: keyword matching only (no LLM)
+                "keywords"    — Mode 2: keyword matching only (no LLM)
                 "openrouter"  — Mode 3: DeepSeek v3.2 via OpenRouter API
 
         Returns:
@@ -303,22 +272,13 @@ class MainAgent:
                 # parsed_intent stays None → falls through to keyword logic below
 
             else:
-                # Mode 2 default (gemini): try Gemini LLM first, keywords as fallback
+                # Mode 2 default: keyword matching only (no LLM)
                 self.logger.info(
-                    "Using Gemini LLM for routing (with keyword fallback)",
+                    "Using keyword matching for routing (no LLM)",
                     correlation_id=correlation_id,
                     routing_mode=routing_mode,
                 )
-                if self.gemini_parser and capabilities:
-                    try:
-                        parsed_intent = await self.gemini_parser.parse_input(
-                            user_input, correlation_id, agent_capabilities=capabilities
-                        )
-                    except Exception as e:
-                        self.logger.warning(
-                            f"Gemini parser failed, falling back to keyword matching: {e}",
-                            correlation_id=correlation_id,
-                        )
+                # parsed_intent stays None → falls through to keyword logic below
 
             # Keyword fallback (used by Mode 2 explicit and as fallback for others)
             if parsed_intent is None:

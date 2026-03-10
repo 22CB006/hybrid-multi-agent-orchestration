@@ -9,12 +9,21 @@ Model: deepseek/deepseek-v3.2
 
 import json
 import time
-from typing import Optional
+from typing import Optional, List, Dict, Any
+from dataclasses import dataclass
 
 import httpx
 
-from core.gemini_parser import ParsedIntent
 from core.logger import StructuredLogger
+
+
+@dataclass
+class ParsedIntent:
+    """Structured representation of parsed user intent."""
+    intent: str
+    entities: Dict[str, Any]
+    target_agents: List[str]
+    confidence: float
 
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
