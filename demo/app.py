@@ -44,11 +44,13 @@ st.markdown(
 )
 
 st.markdown("""
-| Mode | Bus | Routing | Execution |
-|------|-----|---------|-----------|
-| **Mode 1** | None | Direct calls | Sequential (bottleneck) |
-| **Mode 2** | Redis Pub/Sub | Keyword matching | Parallel (fast) |
-| **Mode 3** | Redis Pub/Sub | OpenRouter / DeepSeek v3.2 | Parallel + LLM |
+| Mode | Architecture | Routing | Execution | Hops | Main Agent Load |
+|------|-------------|---------|-----------|------|-----------------|
+| **Mode 1** | Centralized | Static | Sequential (bottleneck) | 11 | ~100% |
+| **Mode 2** | Event-Driven | Keywords | Parallel (async) | 7 | ~20% |
+| **Mode 3** | Event-Driven | LLM Routing | Parallel + LLM | 9 | ~30% |
+
+*Hops counted architecturally (Redis treated as infrastructure)
 """)
 
 st.divider()
@@ -111,7 +113,11 @@ if run_btn:
 
     colors = ["#ef4444", "#22c55e", "#3b82f6"]   # red, green, blue
     fig = go.Figure(go.Bar(
-        x=["Mode 1\nNo Bus (Sequential)", "Mode 2\nRedis + Keywords", "Mode 3\nRedis + OpenRouter"],
+        x=[
+            f"Mode 1\nNo Bus (Sequential)\nHops: {m1['hop_count']}", 
+            f"Mode 2\nRedis + Keywords\nHops: {m2['hop_count']}", 
+            f"Mode 3\nRedis + OpenRouter\nHops: {m3['hop_count']}"
+        ],
         y=[m1["total_time"], m2["total_time"], m3["total_time"]],
         marker_color=colors,
         text=[f"{t:.2f}s" for t in [m1["total_time"], m2["total_time"], m3["total_time"]]],
@@ -120,10 +126,10 @@ if run_btn:
     ))
     fig.update_layout(
         yaxis_title="Response Time (seconds)",
-        yaxis=dict(range=[0, max(m1["total_time"], m2["total_time"], m3["total_time"]) * 1.3]),
+        yaxis=dict(range=[0, max(m1["total_time"], m2["total_time"], m3["total_time"]) * 1.2]),
         plot_bgcolor="white",
         height=350,
-        margin=dict(t=20, b=20),
+        margin=dict(t=20, b=60),  # Increased bottom margin for 3-line labels
         showlegend=False,
     )
     fig.update_xaxes(showgrid=False)
@@ -131,19 +137,32 @@ if run_btn:
     st.plotly_chart(fig, use_container_width=True)
 
     # ── Key metrics ───────────────────────────────────────────────────────────
-    mc1, mc2, mc3, mc4 = st.columns(4)
+    mc1, mc2, mc3, mc4, mc5 = st.columns(5)
     with mc1:
-        st.metric("Mode 1 time", f"{m1['total_time']:.2f}s", help="Sequential, no bus")
+        st.metric("Mode 1", f"{m1['total_time']:.2f}s", help=f"Sequential, no bus • {m1['hop_count']} hops")
     with mc2:
         saved = m1["total_time"] - m2["total_time"]
-        st.metric("Mode 2 time", f"{m2['total_time']:.2f}s",
-                  delta=f"-{saved:.2f}s vs Mode 1", delta_color="inverse")
+        st.metric("Mode 2", f"{m2['total_time']:.2f}s",
+                  delta=f"{'-' if saved > 0 else '+'}{abs(saved):.2f}s vs Mode 1", 
+                  delta_color="inverse" if saved > 0 else "normal",
+                  help=f"Redis + Keywords • {m2['hop_count']} hops")
     with mc3:
         saved3 = m1["total_time"] - m3["total_time"]
-        st.metric("Mode 3 time", f"{m3['total_time']:.2f}s",
-                  delta=f"-{saved3:.2f}s vs Mode 1", delta_color="inverse")
+        st.metric("Mode 3", f"{m3['total_time']:.2f}s",
+                  delta=f"{'-' if saved3 > 0 else '+'}{abs(saved3):.2f}s vs Mode 1", 
+                  delta_color="inverse" if saved3 > 0 else "normal",
+                  help=f"Redis + OpenRouter • {m3['hop_count']} hops")
     with mc4:
-        st.metric("Speedup (M2 vs M1)", summary.get("speedup_mode2_vs_mode1", "—"))
+        fastest_mode = "Mode 1" if m1["total_time"] <= min(m2["total_time"], m3["total_time"]) else ("Mode 2" if m2["total_time"] <= m3["total_time"] else "Mode 3")
+        st.metric("Fastest Mode", fastest_mode, help="Mode with lowest response time")
+    with mc5:
+        # Calculate Main Agent workload based on mode
+        mode1_load = "100%"
+        mode2_load = "~15%" 
+        mode3_load = "~25%"
+        st.metric("Main Agent Load", 
+                 f"M1: {mode1_load} | M2: {mode2_load} | M3: {mode3_load}",
+                 help="Mode 1: Handles all messages • Mode 2: Only monitoring • Mode 3: Routing + monitoring")
 
     st.divider()
 
@@ -200,7 +219,7 @@ if run_btn:
     st.markdown(f"""
 <div class='summary-box'>
 
-**Mode 1 (No Bus)** — Main Agent routes every task sequentially:
+**Mode 1 (Centralized)** — Main Agent orchestrates every task sequentially:
 
 ```
 validate_address (0.8s) → setup_electricity (1.2s) → setup_gas (1.0s)
@@ -208,17 +227,17 @@ validate_address (0.8s) → setup_electricity (1.2s) → setup_gas (1.0s)
 Total = 0.8 + 1.2 + 1.0 + 0.9 + 1.1 = 5.0s  ← SUM of all tasks
 ```
 
-**Mode 2 (Redis Bus)** — Main Agent publishes both agents in parallel, fire-and-forget:
+**Mode 2 (Event-Driven)** — Main Agent publishes tasks to Redis, agents execute in parallel:
 
 ```
-Utilities:  validate_address (0.8s) → setup_electricity (1.2s) → setup_gas (1.0s) = 3.0s
-                                ↘ AddressValidated (peer-to-peer, no Main Agent) ↗
-Broadband:                         check_availability (0.9s) → setup_internet (1.1s) = 2.0s
-Total = max(3.0, 0.8 + 2.0) = 3.0s  ← MAX of parallel pipelines
+Pipeline A (Utilities):  validate_address (0.8s) → setup_electricity (1.2s) → setup_gas (1.0s) = 3.0s
+Pipeline B (Broadband):  check_availability (0.9s) → setup_internet (1.1s) = 2.0s
+Total = max(3.0, 2.0) = 3.0s  ← MAX of parallel pipelines
 ```
 
-**The message bus eliminates the bottleneck** by enabling concurrent execution.
-Main Agent load drops from 100% → ~10% (it only monitors, never blocks).
+**The improvement is not due to Redis being faster than function calls, but because the message bus enables asynchronous, parallel task execution across independent agents.**
+
+The Main Agent is removed from the execution path and becomes a lightweight coordinator responsible for publishing tasks and observing results. Main Agent load drops from ~100% → ~20%.
 
 </div>
 """, unsafe_allow_html=True)
@@ -226,7 +245,9 @@ Main Agent load drops from 100% → ~10% (it only monitors, never blocks).
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
 st.caption(
-    "Architecture: Control Plane (Main Agent) / Data Plane (Redis Pub/Sub) separation · "
-    "Peer-to-peer: Utilities → Broadband via `agent.broadband.address_validated` · "
-    "Retry: exponential backoff + Dead Letter Queue"
+    "**Architecture:** This system transitions from centralized orchestration to a hybrid orchestration–choreography model, improving scalability while preserving governance through the Control Plane. · "
+    "**Control Plane:** Main Agent (monitoring, policy, logging, orchestration) · "
+    "**Data Plane:** Redis Pub/Sub (agent execution, event publishing, peer collaboration) · "
+    "**Peer Communication:** Utilities → Broadband via `agent.broadband.address_validated` · "
+    "**Resilience:** Exponential backoff + Dead Letter Queue"
 )

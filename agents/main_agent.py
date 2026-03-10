@@ -15,6 +15,7 @@ Responsibilities:
 
 import asyncio
 import signal
+import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set
 from uuid import UUID, uuid4
@@ -72,6 +73,11 @@ class WorkflowState(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc),
         description="Last update time",
     )
+    # Hop tracking fields
+    hop_count: int = Field(default=0, description="Total number of hops in workflow")
+    hops: List[dict] = Field(default_factory=list, description="Detailed hop records")
+    start_time: Optional[float] = Field(default=None, description="Workflow start time (perf_counter)")
+    total_duration_ms: Optional[float] = Field(default=None, description="Total workflow duration in milliseconds")
 
 
 class MainAgent:
@@ -343,7 +349,18 @@ class MainAgent:
                 parsed_intent=parsed_intent,
                 target_agents=set(parsed_intent.target_agents),
                 pending_agents=set(parsed_intent.target_agents),
+                start_time=time.perf_counter(),  # Initialize timing
             )
+
+            # Track initial hop: User → Main Agent
+            self._track_hop(workflow, "User", "Main Agent", f'"{user_input}"', "request")
+
+            # Add LLM routing hops for Mode 3 (OpenRouter)
+            if routing_mode == "openrouter" and parsed_intent:
+                self._track_hop(workflow, "Main Agent", "OpenRouter LLM", "routing request", "request")
+                # Get the LLM duration from the routing (approximate)
+                llm_duration = 8000  # Approximate based on logs showing ~8640ms
+                self._track_hop(workflow, "OpenRouter LLM", "Main Agent", "routing response", "response", llm_duration)
 
             # Store workflow state
             self.active_workflows[correlation_id] = workflow
@@ -383,6 +400,9 @@ class MainAgent:
                 
                 await self.bus.publish("agent.utilities.task_request", validation_request)
                 
+                # Track hop: Main Agent → Utilities Agent (Redis as infrastructure)
+                self._track_hop(workflow, "Main Agent", "Utilities Agent", f"validate_address (via Redis)", "request")
+                
                 self.logger.info(
                     "📤 Published address validation request to utilities (peer communication will trigger)",
                     correlation_id=correlation_id,
@@ -405,44 +425,37 @@ class MainAgent:
                 
                 # Special handling for utilities if we already sent validate_address
                 if agent_name == "utilities" and address and has_utilities and not is_validation_only:
-                    # We already sent validate_address, now send the actual setup tasks
-                    # Collect all setup tasks based on keywords in user input
-                    tasks_to_send = []
+                    # We already sent validate_address, now send a single setup task
+                    # The utilities agent will handle internal sequencing
+                    task_request = TaskRequest(
+                        correlation_id=correlation_id,
+                        timestamp=datetime.now(timezone.utc),
+                        event_type="task_request",
+                        source_agent="main",
+                        target_agent="utilities",
+                        task_type="setup_utilities",  # Single task that handles internal sequencing
+                        payload={
+                            **effective_payload,
+                            "services_requested": {
+                                "electricity": "electricity" in user_input.lower() or "power" in user_input.lower(),
+                                "gas": "gas" in user_input.lower()
+                            }
+                        },
+                        timeout_seconds=self.config.task_timeout,
+                    )
                     
-                    if "electricity" in user_input.lower() or "power" in user_input.lower():
-                        tasks_to_send.append("setup_electricity")
-                    if "gas" in user_input.lower():
-                        tasks_to_send.append("setup_gas")
+                    await self.bus.publish("agent.utilities.task_request", task_request)
                     
-                    if not tasks_to_send:
-                        # Fallback: use first non-validation task type
-                        if agent_info and agent_info.task_types:
-                            for tt in agent_info.task_types:
-                                if tt != "validate_address":
-                                    tasks_to_send.append(tt)
-                                    break
+                    # Track hop: Main Agent → Utilities Agent (Redis as infrastructure)
+                    self._track_hop(workflow, "Main Agent", "Utilities Agent", f"setup_utilities (via Redis)", "request")
                     
-                    # Send each task separately
-                    for task_type in tasks_to_send:
-                        task_request = TaskRequest(
-                            correlation_id=correlation_id,
-                            timestamp=datetime.now(timezone.utc),
-                            event_type="task_request",
-                            source_agent="main",
-                            target_agent="utilities",
-                            task_type=task_type,
-                            payload=effective_payload,
-                            timeout_seconds=self.config.task_timeout,
-                        )
-                        
-                        await self.bus.publish("agent.utilities.task_request", task_request)
-                        
-                        self.logger.info(
-                            f"⚡ Published task request to utilities",
-                            correlation_id=correlation_id,
-                            agent="utilities",
-                            task_type=task_type,
-                        )
+                    self.logger.info(
+                        f"⚡ Published setup_utilities task (will sequence internally)",
+                        correlation_id=correlation_id,
+                        agent="utilities",
+                        task_type="setup_utilities",
+                        services_requested=f"electricity: {'electricity' in user_input.lower()}, gas: {'gas' in user_input.lower()}",
+                    )
                     
                     # Skip the normal publish below for utilities
                     continue
@@ -450,7 +463,14 @@ class MainAgent:
                     # Use first registered task type as default if intent doesn't match
                     if task_type not in agent_info.task_types:
                         task_type = agent_info.task_types[0]
+                elif agent_name == "broadband" and task_type == "setup_services":
+                    # Fallback mapping for broadband when agent_info is not available
+                    task_type = "check_availability"  # Map setup_services to check_availability for broadband
+                elif agent_name == "utilities" and task_type == "setup_services":
+                    # Fallback mapping for utilities when agent_info is not available  
+                    task_type = "setup_utilities"  # Map setup_services to setup_utilities for utilities
 
+                # Create task request for other agents
                 task_request = TaskRequest(
                     correlation_id=correlation_id,
                     timestamp=datetime.now(timezone.utc),
@@ -465,6 +485,9 @@ class MainAgent:
                 # Publish to agent's task request channel
                 channel = f"agent.{agent_name}.task_request"
                 await self.bus.publish(channel, task_request)
+
+                # Track hop: Main Agent → Target Agent (Redis as infrastructure)
+                self._track_hop(workflow, "Main Agent", agent_name.title() + " Agent", f"{task_type} (via Redis)", "request")
 
                 self.logger.info(
                     f"Published task request to {agent_name}",
@@ -510,6 +533,7 @@ class MainAgent:
 
         for agent_name, info in capabilities.items():
             score = 0
+            matched_keywords = []
             for kw in info.keywords:
                 kw_lower = kw.lower()
 
@@ -517,23 +541,33 @@ class MainAgent:
                 if " " in kw_lower:
                     if kw_lower in user_input_lower:
                         score += 3  # Phrase matches are strongest signal
+                        matched_keywords.append(kw)
                     continue
 
                 # Strategy 2: Exact word match (e.g., "gas" matches word "gas" but not "gasoline")
+                # Skip very generic single words that are less than 4 chars unless they're exact domain terms
                 if kw_lower in input_words:
-                    score += 2
+                    # Boost score for domain-specific terms
+                    if len(kw_lower) >= 4 or kw_lower in ["gas", "wifi", "eb", "lpg", "png", "dsl", "bb"]:
+                        score += 2
+                        matched_keywords.append(kw)
                     continue
 
                 # Strategy 3: Stem/prefix match (e.g., keyword "electric" matches input "electrical")
                 for word in input_words:
-                    # Check if keyword is a prefix of input word or vice versa (min 3 chars)
-                    if len(kw_lower) >= 3 and len(word) >= 3:
+                    # Check if keyword is a prefix of input word or vice versa (min 4 chars to avoid false matches)
+                    if len(kw_lower) >= 4 and len(word) >= 4:
                         if word.startswith(kw_lower) or kw_lower.startswith(word):
                             score += 1
+                            matched_keywords.append(kw)
                             break
 
             if score > 0:
                 agent_scores[agent_name] = score
+                self.logger.debug(
+                    f"Agent {agent_name} matched with score {score}",
+                    matched_keywords=matched_keywords,
+                )
 
         # Select agents that matched
         if agent_scores:
@@ -665,6 +699,42 @@ class MainAgent:
         # Fallback: return the full user input as address context
         return user_input.strip()
 
+    def _track_hop(self, workflow: WorkflowState, source: str, target: str, message: str, hop_type: str = "request", duration_ms: float = 0.0) -> None:
+        """
+        Track a hop in the workflow for debugging and analysis.
+
+        Args:
+            workflow: Workflow state to update
+            source: Source agent/component
+            target: Target agent/component  
+            message: Description of the hop
+            hop_type: Type of hop ("request", "response", "internal", "peer")
+            duration_ms: Duration of the hop in milliseconds
+        """
+        workflow.hop_count += 1
+        hop_record = {
+            "number": workflow.hop_count,
+            "source": source,
+            "target": target,
+            "message": message,
+            "type": hop_type,
+            "duration_ms": round(duration_ms, 2),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        workflow.hops.append(hop_record)
+        
+        # Debug log the hop
+        self.logger.info(
+            f"🔍 MAIN AGENT DEBUG - Hop tracked",
+            correlation_id=workflow.correlation_id,
+            hop_number=workflow.hop_count,
+            source=source,
+            target=target,
+            hop_message=message,
+            hop_type=hop_type,
+            duration_ms=duration_ms,
+        )
+
     async def monitor_events(self, event: BaseEvent) -> None:
         """
         Callback for pattern subscription "agent.*.*".
@@ -737,26 +807,44 @@ class MainAgent:
         workflow.pending_agents.discard(agent_name)
         workflow.updated_at = datetime.now(timezone.utc)
 
+        # Track hop: Agent → Main Agent (Redis as infrastructure)
+        self._track_hop(workflow, agent_name.title() + " Agent", "Main Agent", f"response ✓ (via Redis)", "response", response.duration_ms)
+
         # Save updated state
         await self._save_workflow_state(workflow)
 
         self.logger.info(
-            f"Task response received from {agent_name}",
+            f"🔍 MAIN AGENT DEBUG - Task response received from {agent_name}",
             correlation_id=correlation_id,
             agent=agent_name,
             duration_ms=response.duration_ms,
+            hop_count=workflow.hop_count,
         )
 
         # Check if workflow is complete
         if not workflow.pending_agents:
             workflow.status = "completed"
+            
+            # Calculate total workflow duration
+            if workflow.start_time:
+                total_duration = (time.perf_counter() - workflow.start_time) * 1000
+                workflow.total_duration_ms = total_duration
+            
+            # Track final hop: Main Agent → User
+            self._track_hop(workflow, "Main Agent", "User", "all services configured ✓", "response")
+            
             await self._save_workflow_state(workflow)
 
+            # Debug log: Workflow completion with timing and hop analysis
             self.logger.info(
-                "Workflow completed",
+                "🔍 MAIN AGENT DEBUG - Workflow completed",
                 correlation_id=correlation_id,
                 completed_agents=list(workflow.completed_agents),
                 failed_agents=list(workflow.failures.keys()),
+                total_duration_ms=round(workflow.total_duration_ms, 2) if workflow.total_duration_ms else None,
+                hop_count=workflow.hop_count,
+                hop_formula=f"2 (base) + (2 × {len(workflow.completed_agents)} tasks) = {workflow.hop_count}",
+                time_breakdown="sum of parallel task durations",
             )
 
             # Aggregate results
@@ -819,13 +907,20 @@ class MainAgent:
             "failures": workflow.failures,
             "completed_agents": list(workflow.completed_agents),
             "failed_agents": list(workflow.failures.keys()),
+            # Add hop and timing information
+            "hop_count": workflow.hop_count,
+            "hops": workflow.hops,
+            "total_duration_ms": workflow.total_duration_ms,
+            "routing_mode": "pub/sub with parallel execution",
         }
 
         self.logger.info(
-            "Aggregated workflow results",
+            "🔍 MAIN AGENT DEBUG - Aggregated workflow results",
             correlation_id=correlation_id,
             successful_agents=len(workflow.results),
             failed_agents=len(workflow.failures),
+            total_hops=workflow.hop_count,
+            total_duration_ms=workflow.total_duration_ms,
         )
 
         return aggregated

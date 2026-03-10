@@ -8,6 +8,7 @@ Handles broadband-specific tasks:
 """
 
 import asyncio
+import time
 from datetime import datetime, timedelta
 
 from agents.base_agent import BaseDataPlaneAgent
@@ -128,39 +129,77 @@ class BroadbandAgent(BaseDataPlaneAgent):
         )
 
     async def execute_task(self, request: TaskRequest) -> dict:
-        """Execute broadband-specific task logic.
+            """Execute broadband-specific task logic.
 
-        Handles task types:
-        - check_availability: Verifies broadband coverage
-        - setup_internet: Initiates internet service
-        - get_plans: Retrieves available plans
-        - schedule_installation: Books installation appointment
+            Handles task types:
+            - check_availability: Verifies broadband coverage
+            - setup_internet: Initiates internet service
+            - get_plans: Retrieves available plans
+            - schedule_installation: Books installation appointment
 
-        Args:
-            request: Task request with task_type and payload
+            Args:
+                request: Task request with task_type and payload
 
-        Returns:
-            Task execution result as dictionary
+            Returns:
+                Task execution result as dictionary
 
-        Raises:
-            ValueError: If task_type is unknown
-            TimeoutError: If task exceeds timeout_seconds
-            Exception: On task execution failure
-        """
-        task_type = request.task_type
-        payload = request.payload
-        timeout_seconds = request.timeout_seconds
+            Raises:
+                ValueError: If task_type is unknown
+                TimeoutError: If task exceeds timeout_seconds
+                Exception: On task execution failure
+            """
+            task_type = request.task_type
+            payload = request.payload
+            timeout_seconds = request.timeout_seconds
+            correlation_id = request.correlation_id
 
-        # Execute task with timeout
-        try:
-            result = await asyncio.wait_for(
-                self._execute_task_internal(task_type, payload), timeout=timeout_seconds
+            # Debug log: Task execution start
+            start_time = time.perf_counter()
+            self.logger.info(
+                f"🔍 BROADBAND DEBUG - Task execution started",
+                correlation_id=correlation_id,
+                task_type=task_type,
+                timeout_seconds=timeout_seconds,
+                payload_keys=list(payload.keys()) if payload else [],
             )
-            return result
-        except asyncio.TimeoutError:
-            raise TimeoutError(
-                f"Task {task_type} exceeded timeout of {timeout_seconds} seconds"
-            )
+
+            # Execute task with timeout
+            try:
+                result = await asyncio.wait_for(
+                    self._execute_task_internal(task_type, payload), timeout=timeout_seconds
+                )
+
+                # Debug log: Task execution complete
+                end_time = time.perf_counter()
+                duration_ms = (end_time - start_time) * 1000
+
+                self.logger.info(
+                    f"🔍 BROADBAND DEBUG - Task execution completed",
+                    correlation_id=correlation_id,
+                    task_type=task_type,
+                    duration_ms=round(duration_ms, 2),
+                    result_keys=list(result.keys()) if isinstance(result, dict) else "non-dict",
+                    hop_info=f"Main Agent → Broadband Agent → Main Agent (task: {task_type})",
+                )
+
+                return result
+            except asyncio.TimeoutError:
+                end_time = time.perf_counter()
+                duration_ms = (end_time - start_time) * 1000
+
+                self.logger.error(
+                    f"🔍 BROADBAND DEBUG - Task timed out",
+                    correlation_id=correlation_id,
+                    task_type=task_type,
+                    duration_ms=round(duration_ms, 2),
+                    timeout_seconds=timeout_seconds,
+                    hop_info=f"Main Agent → Broadband Agent (TIMEOUT after {timeout_seconds}s)",
+                )
+
+                raise TimeoutError(
+                    f"Task {task_type} exceeded timeout of {timeout_seconds} seconds"
+                )
+
 
     async def _execute_task_internal(self, task_type: str, payload: dict) -> dict:
         """Internal task execution logic without timeout wrapper.
@@ -199,6 +238,14 @@ class BroadbandAgent(BaseDataPlaneAgent):
         if not address:
             raise ValueError("Address is required for availability check")
 
+        # Debug log: Task method start
+        method_start = time.perf_counter()
+        self.logger.info(
+            f"🔍 BROADBAND DEBUG - _check_availability started",
+            address=address,
+            method="check_availability",
+        )
+
         # Check if we have validation data from Utilities Agent (peer communication)
         utilities_validation = self.validated_addresses.get(address)
         
@@ -208,11 +255,21 @@ class BroadbandAgent(BaseDataPlaneAgent):
                 address=address,
                 service_area=utilities_validation.get("service_area"),
                 validated_by=utilities_validation.get("validated_by"),
+                hop_info="Utilities Agent → Broadband Agent (peer communication)",
             )
 
         # Simulate availability check logic
         # In production, this would call ISP coverage APIs
+        api_start = time.perf_counter()
         await asyncio.sleep(0.9)  # Simulate API call (realistic delay for demo)
+        api_duration = (time.perf_counter() - api_start) * 1000
+
+        self.logger.info(
+            f"🔍 BROADBAND DEBUG - ISP API call completed",
+            address=address,
+            api_duration_ms=round(api_duration, 2),
+            simulated_delay_ms=900,
+        )
 
         result = {
             "address": address,
@@ -234,6 +291,16 @@ class BroadbandAgent(BaseDataPlaneAgent):
         else:
             result["utilities_validated"] = False
         
+        # Debug log: Task method complete
+        method_duration = (time.perf_counter() - method_start) * 1000
+        self.logger.info(
+            f"🔍 BROADBAND DEBUG - _check_availability completed",
+            address=address,
+            method_duration_ms=round(method_duration, 2),
+            utilities_validated=result["utilities_validated"],
+            providers_count=len(result["providers"]),
+        )
+        
         return result
 
     async def _setup_internet(self, payload: dict) -> dict:
@@ -253,11 +320,31 @@ class BroadbandAgent(BaseDataPlaneAgent):
         if not address:
             raise ValueError("Address is required for internet setup")
 
+        # Debug log: Task method start
+        method_start = time.perf_counter()
+        self.logger.info(
+            f"🔍 BROADBAND DEBUG - _setup_internet started",
+            address=address,
+            plan_id=plan_id,
+            provider=provider,
+            method="setup_internet",
+        )
+
         # Simulate internet setup logic
         # In production, this would call ISP provisioning APIs
+        api_start = time.perf_counter()
         await asyncio.sleep(1.1)  # Simulate API call (realistic delay for demo)
+        api_duration = (time.perf_counter() - api_start) * 1000
 
-        return {
+        self.logger.info(
+            f"🔍 BROADBAND DEBUG - ISP provisioning API call completed",
+            address=address,
+            provider=provider,
+            api_duration_ms=round(api_duration, 2),
+            simulated_delay_ms=1100,
+        )
+
+        result = {
             "service_type": "internet",
             "address": address,
             "provider": provider,
@@ -269,6 +356,19 @@ class BroadbandAgent(BaseDataPlaneAgent):
             "installation_required": True,
             "estimated_installation_date": start_date or "within_5_business_days",
         }
+
+        # Debug log: Task method complete
+        method_duration = (time.perf_counter() - method_start) * 1000
+        self.logger.info(
+            f"🔍 BROADBAND DEBUG - _setup_internet completed",
+            address=address,
+            provider=provider,
+            account_number=result["account_number"],
+            method_duration_ms=round(method_duration, 2),
+            connection_type=result["connection_type"],
+        )
+
+        return result
 
     async def _get_plans(self, payload: dict) -> dict:
         """Retrieve available broadband plans.
@@ -369,9 +469,29 @@ class BroadbandAgent(BaseDataPlaneAgent):
         if not account_number:
             raise ValueError("Account number is required for installation scheduling")
 
+        # Debug log: Task method start
+        method_start = time.perf_counter()
+        self.logger.info(
+            f"🔍 BROADBAND DEBUG - _schedule_installation started",
+            address=address,
+            account_number=account_number,
+            time_slot=time_slot,
+            method="schedule_installation",
+        )
+
         # Simulate installation scheduling logic
         # In production, this would call ISP scheduling APIs
+        api_start = time.perf_counter()
         await asyncio.sleep(0.2)  # Simulate API call
+        api_duration = (time.perf_counter() - api_start) * 1000
+
+        self.logger.info(
+            f"🔍 BROADBAND DEBUG - ISP scheduling API call completed",
+            address=address,
+            account_number=account_number,
+            api_duration_ms=round(api_duration, 2),
+            simulated_delay_ms=200,
+        )
 
         # Calculate installation date (5 business days from now if not specified)
         if preferred_date:
@@ -387,7 +507,7 @@ class BroadbandAgent(BaseDataPlaneAgent):
             "evening": "5:00 PM - 8:00 PM",
         }
 
-        return {
+        result = {
             "address": address,
             "account_number": account_number,
             "installation_date": installation_date,
@@ -399,6 +519,20 @@ class BroadbandAgent(BaseDataPlaneAgent):
             "estimated_duration_hours": 2,
             "customer_presence_required": True,
         }
+
+        # Debug log: Task method complete
+        method_duration = (time.perf_counter() - method_start) * 1000
+        self.logger.info(
+            f"🔍 BROADBAND DEBUG - _schedule_installation completed",
+            address=address,
+            account_number=account_number,
+            installation_date=installation_date,
+            confirmation_number=result["confirmation_number"],
+            method_duration_ms=round(method_duration, 2),
+            time_window=result["time_window"],
+        )
+
+        return result
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ Handles utilities-specific tasks:
 """
 
 import asyncio
+import time
 from typing import Any
 
 from agents.base_agent import BaseDataPlaneAgent
@@ -18,7 +19,7 @@ from core.schemas import TaskRequest
 class UtilitiesAgent(BaseDataPlaneAgent):
     """Data plane agent handling electricity and gas setup tasks."""
 
-    TASK_TYPES = ["validate_address", "setup_electricity", "setup_gas", "get_quote"]
+    TASK_TYPES = ["validate_address", "setup_electricity", "setup_gas", "setup_utilities", "get_quote"]
     KEYWORDS = [
         # Electricity
         "electricity", "electric", "electrical", "elec",
@@ -75,14 +76,51 @@ class UtilitiesAgent(BaseDataPlaneAgent):
         task_type = request.task_type
         payload = request.payload
         timeout_seconds = request.timeout_seconds
+        correlation_id = request.correlation_id
+
+        # Debug log: Task execution start
+        start_time = time.perf_counter()
+        self.logger.info(
+            f"🔍 UTILITIES DEBUG - Task execution started",
+            correlation_id=correlation_id,
+            task_type=task_type,
+            timeout_seconds=timeout_seconds,
+            payload_keys=list(payload.keys()) if payload else [],
+        )
 
         # Execute task with timeout
         try:
             result = await asyncio.wait_for(
                 self._execute_task_internal(task_type, payload), timeout=timeout_seconds
             )
+            
+            # Debug log: Task execution complete
+            end_time = time.perf_counter()
+            duration_ms = (end_time - start_time) * 1000
+            
+            self.logger.info(
+                f"🔍 UTILITIES DEBUG - Task execution completed",
+                correlation_id=correlation_id,
+                task_type=task_type,
+                duration_ms=round(duration_ms, 2),
+                result_keys=list(result.keys()) if isinstance(result, dict) else "non-dict",
+                hop_info=f"Main Agent → Utilities Agent → Main Agent (task: {task_type})",
+            )
+            
             return result
         except asyncio.TimeoutError:
+            end_time = time.perf_counter()
+            duration_ms = (end_time - start_time) * 1000
+            
+            self.logger.error(
+                f"🔍 UTILITIES DEBUG - Task timed out",
+                correlation_id=correlation_id,
+                task_type=task_type,
+                duration_ms=round(duration_ms, 2),
+                timeout_seconds=timeout_seconds,
+                hop_info=f"Main Agent → Utilities Agent (TIMEOUT after {timeout_seconds}s)",
+            )
+            
             raise TimeoutError(
                 f"Task {task_type} exceeded timeout of {timeout_seconds} seconds"
             )
@@ -106,6 +144,8 @@ class UtilitiesAgent(BaseDataPlaneAgent):
             return await self._setup_electricity(payload)
         elif task_type == "setup_gas":
             return await self._setup_gas(payload)
+        elif task_type == "setup_utilities":
+            return await self._setup_utilities(payload)
         elif task_type == "get_quote":
             return await self._get_quote(payload)
         else:
@@ -322,6 +362,64 @@ class UtilitiesAgent(BaseDataPlaneAgent):
                 q.get("estimated_monthly_cost", 0) for q in quotes
             ),
             "quote_valid_until": "30_days",
+        }
+
+    async def _setup_utilities(self, payload: dict) -> dict:
+        """Setup utilities services with proper internal sequencing.
+        
+        This method ensures electricity and gas setup happen sequentially,
+        not in parallel, which is more realistic since gas setup often
+        requires electricity to be available first.
+
+        Args:
+            payload: Must contain 'address' and 'services_requested' dict
+
+        Returns:
+            Combined results from electricity and gas setup
+        """
+        address = payload.get("address")
+        services_requested = payload.get("services_requested", {})
+        
+        if not address:
+            raise ValueError("Address is required for utilities setup")
+
+        # Debug log: Sequential utilities setup start
+        method_start = time.perf_counter()
+        self.logger.info(
+            f"🔍 UTILITIES DEBUG - _setup_utilities started (sequential processing)",
+            address=address,
+            services_requested=services_requested,
+            method="setup_utilities",
+        )
+
+        results = {}
+        
+        # Sequential processing: electricity first, then gas
+        if services_requested.get("electricity", False):
+            self.logger.info("🔌 Setting up electricity (step 1/2)")
+            electricity_result = await self._setup_electricity(payload)
+            results["electricity"] = electricity_result
+            
+        if services_requested.get("gas", False):
+            self.logger.info("🔥 Setting up gas (step 2/2)")
+            gas_result = await self._setup_gas(payload)
+            results["gas"] = gas_result
+
+        # Debug log: Sequential utilities setup complete
+        method_duration = (time.perf_counter() - method_start) * 1000
+        self.logger.info(
+            f"🔍 UTILITIES DEBUG - _setup_utilities completed (sequential)",
+            address=address,
+            method_duration_ms=round(method_duration, 2),
+            services_completed=list(results.keys()),
+            total_services=len(results),
+        )
+
+        return {
+            "address": address,
+            "services_setup": results,
+            "setup_mode": "sequential",
+            "total_services": len(results),
         }
 
 

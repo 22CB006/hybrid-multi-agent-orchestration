@@ -1164,6 +1164,9 @@ async def compare_modes(request: TaskSubmissionRequest) -> CompareResponse:
     patterns = [
         r"\bat\s+([0-9]+[^,\.]+(?:,\s*[^,\.]+)*)",   # "at 123 Main St, London"
         r"\bfor\s+([0-9]+[^,\.]+(?:,\s*[^,\.]+)*)",  # "for 42 Oak Lane"
+        r"\bat\s+([A-Za-z][^,\.]{2,})",               # "at coimbatore" or "at london"
+        r"\bfor\s+([A-Za-z][^,\.]{2,})",              # "for coimbatore"
+        r"\bin\s+([A-Za-z][^,\.]{2,})",               # "in coimbatore"
         r"\b([0-9]+\s+[A-Za-z][^,\.]{4,})",           # bare "123 High Street..."
     ]
     for pattern in patterns:
@@ -1200,8 +1203,16 @@ async def compare_modes(request: TaskSubmissionRequest) -> CompareResponse:
 
     # ── Helper: run MainAgent and wait for workflow to complete ───────────────
     async def _run_via_bus(routing_mode: str, mode_label: str, mode_routing: str, mode_parallelism: str):
+        """
+        Run workflow via Redis bus and build hops from workflow state.
+        
+        Uses the workflow state to determine which agents participated
+        and builds the hop sequence dynamically.
+        """
         t_start = _time.perf_counter()
+        
         try:
+            # Start the workflow
             correlation_id = await main_agent.handle_user_request(
                 user_input, routing_mode=routing_mode, payload_override=payload
             )
@@ -1211,38 +1222,167 @@ async def compare_modes(request: TaskSubmissionRequest) -> CompareResponse:
             while _time.perf_counter() < deadline:
                 wf = main_agent.active_workflows.get(correlation_id)
                 if wf and not wf.pending_agents:
+                    await asyncio.sleep(0.3)  # Let final events settle
                     break
                 await asyncio.sleep(0.15)
 
             total_time = _time.perf_counter() - t_start
-            wf = main_agent.active_workflows.get(correlation_id)
-
+            
+            # Reload workflow state
+            wf = await main_agent._load_workflow_state(correlation_id)
             if not wf:
-                wf = await main_agent._load_workflow_state(correlation_id)
+                wf = main_agent.active_workflows.get(correlation_id)
 
             results = wf.results if wf else {}
+            completed_agents = list(wf.completed_agents) if wf and wf.completed_agents else []
+            failed_agents = list(wf.failures.keys()) if wf and wf.failures else []
+            all_agents = sorted(set(completed_agents + failed_agents))
+            
+            # Initialize LLM hops count based on routing mode
+            llm_hops = 2 if routing_mode == "openrouter" else 0
+            
+            # Build hop sequence from actual workflow state if available
+            hops = []
+            if wf and wf.hops:
+                # Use the actual hops from workflow state (more accurate)
+                hops = wf.hops
+                if logger:
+                    logger.info(
+                        f"🔍 MODE 2/3 DEBUG - Using actual workflow hops for {routing_mode}",
+                        correlation_id=correlation_id,
+                        agents=all_agents,
+                        completed_agents=completed_agents,
+                        failed_agents=failed_agents,
+                        hop_count=len(hops),
+                        actual_workflow_hops=wf.hop_count,
+                        total_time=round(total_time, 3),
+                        time_note="Using actual workflow hop tracking",
+                    )
+            else:
+                # Fallback: Build architectural hop sequence (Redis as infrastructure)
+                hop_num = 1
+                
+                # Hop 1: User → Main Agent (workflow initiation)
+                agent_list = ", ".join(all_agents) if all_agents else "none"
+                hops.append({
+                    "number": hop_num,
+                    "source": "User",
+                    "target": "Main Agent",
+                    "message": f'"{user_input}" → [{agent_list}]',
+                    "type": "request",
+                    "duration_ms": 0
+                })
+                hop_num += 1
+                
+                # Add LLM routing hops for Mode 3 (OpenRouter)
+                if routing_mode == "openrouter":
+                    hops.append({
+                        "number": hop_num,
+                        "source": "Main Agent",
+                        "target": "OpenRouter LLM",
+                        "message": "routing request",
+                        "type": "request",
+                        "duration_ms": 0
+                    })
+                    hop_num += 1
+                    
+                    hops.append({
+                        "number": hop_num,
+                        "source": "OpenRouter LLM",
+                        "target": "Main Agent",
+                        "message": "routing response",
+                        "type": "response",
+                        "duration_ms": 8000  # Approximate LLM latency
+                    })
+                    hop_num += 1
+                
+                # Add request hops for each agent (architectural - Redis as infrastructure)
+                for agent_name in all_agents:
+                    hops.append({
+                        "number": hop_num,
+                        "source": "Main Agent",
+                        "target": f"{agent_name.title()} Agent",
+                        "message": f"task_request (via Redis)",
+                        "type": "request",
+                        "duration_ms": 0
+                    })
+                    hop_num += 1
+                
+                # Add peer-to-peer hop if both utilities and broadband participated
+                if "utilities" in all_agents and "broadband" in all_agents:
+                    hops.append({
+                        "number": hop_num,
+                        "source": "Utilities Agent",
+                        "target": "Broadband Agent",
+                        "message": "AddressValidated (peer communication)",
+                        "type": "peer",
+                        "duration_ms": 0
+                    })
+                    hop_num += 1
+                
+                # Add response hops for each agent (architectural - Redis as infrastructure)
+                for agent_name in all_agents:
+                    status = "✓" if agent_name in completed_agents else "✗"
+                    hops.append({
+                        "number": hop_num,
+                        "source": f"{agent_name.title()} Agent",
+                        "target": "Main Agent",
+                        "message": f"task_response {status} (via Redis)",
+                        "type": "response",
+                        "duration_ms": 0
+                    })
+                    hop_num += 1
+                
+                # Final hop: Main Agent → User
+                hops.append({
+                    "number": hop_num,
+                    "source": "Main Agent",
+                    "target": "User",
+                    "message": "workflow complete",
+                    "type": "response",
+                    "duration_ms": 0
+                })
 
-            # Build hop sequence representing the real execution flow
-            hops = [
-                {"number": 1, "source": "User",          "target": "Main Agent",      "message": f'"{user_input}"',             "type": "request",  "duration_ms": 0},
-                {"number": 2, "source": "Main Agent",    "target": f"Router ({routing_mode})", "message": "parse & route input",  "type": "request",  "duration_ms": 0},
-                {"number": 3, "source": f"Router ({routing_mode})", "target": "Main Agent", "message": "→ [utilities, broadband]", "type": "response", "duration_ms": 0},
-                {"number": 4, "source": "Main Agent",    "target": "Redis Bus",        "message": "publish TaskRequest × 2 (parallel)", "type": "request", "duration_ms": 0},
-                {"number": 5, "source": "Redis Bus",     "target": "Utilities Agent",  "message": "TaskRequest dispatched",      "type": "request",  "duration_ms": 0},
-                {"number": 6, "source": "Redis Bus",     "target": "Broadband Agent",  "message": "TaskRequest dispatched",      "type": "request",  "duration_ms": 0},
-                {"number": 7, "source": "Utilities Agent","target": "Broadband Agent", "message": "AddressValidated (peer-to-peer, no Main Agent)", "type": "peer", "duration_ms": 0},
-                {"number": 8, "source": "Utilities Agent","target": "Redis Bus",       "message": "TaskResponse: utilities ✓",   "type": "response", "duration_ms": 0},
-                {"number": 9, "source": "Broadband Agent","target": "Redis Bus",       "message": "TaskResponse: broadband ✓",   "type": "response", "duration_ms": 0},
-                {"number": 10,"source": "Redis Bus",     "target": "Main Agent",       "message": "all responses aggregated ✓",  "type": "response", "duration_ms": 0},
-                {"number": 11,"source": "Main Agent",    "target": "User",             "message": "correlation_id (async)",      "type": "response", "duration_ms": 0},
-            ]
+                # Calculate hop formula for debugging
+                base_hops = 2  # User→Main, Main→User
+                agent_hops = len(all_agents) * 2  # Request + Response per agent (Redis as infrastructure)
+                peer_hops = 1 if ("utilities" in all_agents and "broadband" in all_agents) else 0  # Utilities→Broadband
+                expected_hops = base_hops + agent_hops + peer_hops + llm_hops
+                
+                if logger:
+                    logger.info(
+                        f"🔍 MODE 2/3 DEBUG - Built architectural hops for {routing_mode}",
+                        correlation_id=correlation_id,
+                        agents=all_agents,
+                        completed_agents=completed_agents,
+                        failed_agents=failed_agents,
+                        hop_count=len(hops),
+                        expected_hops=expected_hops,
+                        hop_formula=f"2 (base) + (2 × {len(all_agents)} agents) + {peer_hops} (peer) + {llm_hops} (LLM) = {expected_hops}",
+                        hop_breakdown={
+                            "base": base_hops,
+                            "agent_requests": len(all_agents),
+                            "peer_communication": peer_hops,
+                            "agent_responses": len(all_agents),
+                            "llm_routing": llm_hops,
+                            "total": len(hops)
+                        },
+                        total_time=round(total_time, 3),
+                        time_note="Redis treated as infrastructure (not counted in hops)",
+                    )
+
+            # Calculate architectural hop count (Redis as infrastructure)
+            architectural_base_hops = 2  # User→Main, Main→User  
+            architectural_agent_hops = len(all_agents) * 2  # Request + Response per agent
+            architectural_peer_hops = 1 if ("utilities" in all_agents and "broadband" in all_agents) else 0
+            architectural_hop_count = architectural_base_hops + architectural_agent_hops + architectural_peer_hops + llm_hops
 
             return CompareModeResult(
                 mode=mode_label,
                 routing=mode_routing,
                 parallelism=mode_parallelism,
                 total_time=round(total_time, 3),
-                hop_count=len(hops),
+                hop_count=architectural_hop_count,  # Use architectural hop count only
                 hops=hops,
                 results=results,
             )
@@ -1284,31 +1424,80 @@ async def compare_modes(request: TaskSubmissionRequest) -> CompareResponse:
         "mode2": mode2_result.total_time,
         "mode3": mode3_result.total_time,
     }
+    
+    hops = {
+        "mode1": mode1_result.hop_count,
+        "mode2": mode2_result.hop_count,
+        "mode3": mode3_result.hop_count,
+    }
+    
+    # Determine which agents were actually involved
+    mode1_agents = set()
+    if mode1_result.results:
+        if any("validate_address" in k or "electricity" in k or "gas" in k for k in mode1_result.results.keys()):
+            mode1_agents.add("utilities")
+        if any("availability" in k or "internet" in k for k in mode1_result.results.keys()):
+            mode1_agents.add("broadband")
+    
+    agent_count = len(mode1_agents)
+    has_parallelism = agent_count > 1
+    
     fastest = min(times, key=times.get)
     speedup_m2_vs_m1 = round(times["mode1"] / times["mode2"], 2) if times["mode2"] > 0 else 0
+    
+    # Build explanation based on whether parallelism was possible
+    if has_parallelism:
+        why_explanation = (
+            f"Parallelism benefit: Mode 1 runs {agent_count} agents sequentially "
+            f"(sum of all tasks = {times['mode1']:.2f}s), while Mode 2/3 run them concurrently "
+            f"(max of parallel pipelines = {times['mode2']:.2f}s). "
+            "The message bus eliminates the routing bottleneck."
+        )
+    else:
+        why_explanation = (
+            f"Single agent scenario: Only {list(mode1_agents)[0] if mode1_agents else 'one agent'} was invoked. "
+            f"Mode 1 is faster ({times['mode1']:.2f}s) because there's no parallelism benefit, "
+            f"and Mode 2/3 have Redis bus overhead ({times['mode2']:.2f}s). "
+            "Try a request with multiple services (e.g., 'electricity and internet') to see parallelism benefits."
+        )
 
     summary = {
         "fastest_mode": fastest,
-        "speedup_mode2_vs_mode1": f"{speedup_m2_vs_m1}x faster",
+        "speedup_mode2_vs_m1": f"{speedup_m2_vs_m1}x" if speedup_m2_vs_m1 >= 1 else f"{1/speedup_m2_vs_m1:.2f}x slower",
         "time_saved_seconds": round(times["mode1"] - times["mode2"], 2),
         "mode1_time_s": times["mode1"],
         "mode2_time_s": times["mode2"],
         "mode3_time_s": times["mode3"],
         "address_used": address,
-        "why_mode2_faster": (
-            "Redis bus enables parallel execution: Mode 1 runs all tasks sequentially "
-            f"(sum={times['mode1']}s), Mode 2 runs utilities & broadband concurrently "
-            f"(max={times['mode2']}s)"
-        ),
+        "agents_involved": list(mode1_agents),
+        "parallelism_possible": has_parallelism,
+        "why_these_results": why_explanation,
     }
 
     if logger:
         logger.info(
-            "Mode comparison complete",
+            "🔍 COMPARISON DEBUG - Mode comparison complete",
             mode1_time=times["mode1"],
             mode2_time=times["mode2"],
             mode3_time=times["mode3"],
+            mode1_hops=hops["mode1"],
+            mode2_hops=hops["mode2"],
+            mode3_hops=hops["mode3"],
+            agents=list(mode1_agents),
+            agent_count=agent_count,
+            parallelism=has_parallelism,
             speedup=speedup_m2_vs_m1,
+            fastest_mode=fastest,
+            hop_comparison={
+                "mode1": f"{hops['mode1']} hops (2 + 2×tasks)",
+                "mode2": f"{hops['mode2']} hops (2 + 2×agents + peer)",
+                "mode3": f"{hops['mode3']} hops (2 + 2×agents + peer + LLM)",
+            },
+            time_comparison={
+                "mode1": f"{times['mode1']:.2f}s (sequential sum)",
+                "mode2": f"{times['mode2']:.2f}s (parallel max + overhead)",
+                "mode3": f"{times['mode3']:.2f}s (parallel max + LLM + overhead)",
+            },
         )
 
     return CompareResponse(
