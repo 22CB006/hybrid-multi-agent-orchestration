@@ -199,6 +199,8 @@ class MainAgent:
         user_input: str,
         routing_mode: str = "keywords",
         payload_override: Optional[dict] = None,
+        correlation_id: Optional[UUID] = None,
+        timeout_override: Optional[int] = None,
     ) -> UUID:
         """
         Process user request and orchestrate multi-agent workflow.
@@ -219,7 +221,8 @@ class MainAgent:
         Returns:
             correlation_id for status tracking
         """
-        correlation_id = uuid4()
+        correlation_id = correlation_id or uuid4()
+        timeout_seconds = timeout_override or self.config.task_timeout
 
         self.logger.info(
             "🎯 PARSE_INPUT CALLED - Processing user request",
@@ -355,7 +358,7 @@ class MainAgent:
                     target_agent="utilities",
                     task_type="validate_address",
                     payload=effective_payload,
-                    timeout_seconds=self.config.task_timeout,
+                    timeout_seconds=timeout_seconds,
                 )
                 
                 await self.bus.publish("agent.utilities.task_request", validation_request)
@@ -401,7 +404,7 @@ class MainAgent:
                                 "gas": "gas" in user_input.lower()
                             }
                         },
-                        timeout_seconds=self.config.task_timeout,
+                        timeout_seconds=timeout_seconds,
                     )
                     
                     await self.bus.publish("agent.utilities.task_request", task_request)
@@ -439,7 +442,7 @@ class MainAgent:
                     target_agent=agent_name,
                     task_type=task_type,
                     payload=effective_payload,
-                    timeout_seconds=self.config.task_timeout,
+                    timeout_seconds=timeout_seconds,
                 )
 
                 # Publish to agent's task request channel

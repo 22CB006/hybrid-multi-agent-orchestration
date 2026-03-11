@@ -32,6 +32,17 @@ class TaskSubmissionRequest(BaseModel):
         min_length=1,
         max_length=1000,
     )
+    correlation_id: Optional[str] = Field(
+        None,
+        description="Optional correlation ID for idempotency. If not provided, one will be generated.",
+    )
+    timeout: Optional[float] = Field(
+        None,
+        description="Optional timeout in seconds for task execution (supports decimals)",
+        ge=0.1,
+        le=300.0,
+    )
+
 
 
 class TaskSubmissionResponse(BaseModel):
@@ -48,18 +59,25 @@ class TaskStatusResponse(BaseModel):
     """Response for task status retrieval."""
 
     correlation_id: str = Field(..., description="Workflow identifier")
-    status: str = Field(..., description="Workflow status (in_progress, completed)")
+    status: str = Field(..., description="Workflow status (in_progress, completed, failed)")
+    message: Optional[str] = Field(default=None, description="Status message")
     results: Optional[Dict[str, dict]] = Field(
         default=None, description="Results from completed agents"
     )
-    failures: Optional[Dict[str, str]] = Field(
-        default=None, description="Failures from agents"
+    failures: Optional[List[str]] = Field(
+        default=None, description="Failure reasons"
     )
     completed_agents: Optional[List[str]] = Field(
         default=None, description="Agents that completed successfully"
     )
     failed_agents: Optional[List[str]] = Field(
         default=None, description="Agents that failed"
+    )
+    retry_count: Optional[int] = Field(
+        default=None, description="Number of retry attempts"
+    )
+    dlq_event_id: Optional[str] = Field(
+        default=None, description="DLQ event ID if moved to dead letter queue"
     )
 
 
@@ -209,7 +227,7 @@ class CompareModeResult(BaseModel):
     routing: str
     parallelism: str
     total_time: float
-    hop_count: int
+    hop_count: int  # Architectural hop count (Redis treated as infrastructure)
     hops: List[dict]
     results: dict
     error: Optional[str] = None
@@ -350,10 +368,10 @@ async def submit_task(request: TaskSubmissionRequest) -> TaskSubmissionResponse:
     """
     Submit new user request for processing.
 
-    Generates a unique correlation_id and initiates multi-agent workflow.
+    Uses provided correlation_id for idempotency, or generates a new one.
 
     Args:
-        request: Task submission request with user input
+        request: Task submission request with user input and optional correlation_id
 
     Returns:
         TaskSubmissionResponse with correlation_id for status tracking
@@ -368,18 +386,50 @@ async def submit_task(request: TaskSubmissionRequest) -> TaskSubmissionResponse:
         )
 
     try:
+        # Use provided correlation_id or generate new one
+        if request.correlation_id:
+            try:
+                correlation_id = UUID(request.correlation_id)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid correlation_id format. Must be a valid UUID.",
+                )
+        else:
+            correlation_id = None  # Let handle_user_request generate one
+
         # Submit request to Main Agent
-        correlation_id = await main_agent.handle_user_request(request.user_input)
+        if correlation_id:
+            # Check if this correlation_id is already being processed
+            if correlation_id in main_agent.active_workflows:
+                return TaskSubmissionResponse(
+                    correlation_id=str(correlation_id),
+                    status="accepted",
+                    message="Request already being processed (idempotency)",
+                )
+            
+            # Pass the correlation_id to handle_user_request
+            result_correlation_id = await main_agent.handle_user_request(
+                request.user_input, 
+                correlation_id=correlation_id,
+                timeout_override=request.timeout
+            )
+        else:
+            result_correlation_id = await main_agent.handle_user_request(
+                request.user_input,
+                timeout_override=request.timeout
+            )
 
         if logger:
             logger.info(
                 "Task submitted successfully",
-                correlation_id=correlation_id,
+                correlation_id=result_correlation_id,
                 user_input=request.user_input,
+                provided_correlation_id=request.correlation_id is not None,
             )
 
         return TaskSubmissionResponse(
-            correlation_id=str(correlation_id),
+            correlation_id=str(result_correlation_id),
             status="accepted",
             message="Request is being processed",
         )
@@ -387,6 +437,110 @@ async def submit_task(request: TaskSubmissionRequest) -> TaskSubmissionResponse:
     except Exception as e:
         if logger:
             logger.error(f"Failed to submit task: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to submit task: {str(e)}",
+        )
+
+
+@app.post(
+    "/tasks/sync",
+    response_model=TaskStatusResponse,
+    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+    summary="Submit task and wait for completion (synchronous)",
+    description="Submit a task and wait for it to complete or fail. Returns final status including retry failures and DLQ movement.",
+)
+async def submit_task_sync(request: TaskSubmissionRequest) -> TaskStatusResponse:
+    """
+    Submit task and wait for completion (synchronous).
+    
+    Unlike /tasks, this endpoint waits for the task to complete or fail
+    before returning, showing retry attempts and DLQ movement.
+    
+    Args:
+        request: Task submission request
+        
+    Returns:
+        Final task status with retry details and DLQ information
+        
+    Raises:
+        HTTPException: If task submission fails or times out
+    """
+    if not main_agent:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Main Agent not initialized",
+        )
+
+    try:
+        # Submit task first
+        if request.correlation_id:
+            try:
+                correlation_id = UUID(request.correlation_id)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid correlation_id format. Must be a valid UUID.",
+                )
+        else:
+            correlation_id = None
+
+        # Submit request to Main Agent
+        if correlation_id:
+            if correlation_id in main_agent.active_workflows:
+                # Return current status if already processing
+                return await get_task_status(correlation_id)
+            
+            result_correlation_id = await main_agent.handle_user_request(
+                request.user_input, 
+                correlation_id=correlation_id,
+                timeout_override=request.timeout
+            )
+        else:
+            result_correlation_id = await main_agent.handle_user_request(
+                request.user_input,
+                timeout_override=request.timeout
+            )
+
+        # Wait for task completion with timeout (max 60 seconds)
+        max_wait_time = 60
+        check_interval = 0.5
+        elapsed_time = 0
+        
+        while elapsed_time < max_wait_time:
+            await asyncio.sleep(check_interval)
+            elapsed_time += check_interval
+            
+            # Check if task completed
+            workflow = main_agent.active_workflows.get(result_correlation_id)
+            if not workflow:
+                # Task completed, get final status
+                break
+                
+            # Check if task is in DLQ
+            if main_agent and main_agent.dead_letter_queue:
+                dlq_events = await main_agent.dead_letter_queue.get_all()
+                for event in dlq_events:
+                    if str(event.original_event.correlation_id) == str(result_correlation_id):
+                        # Found in DLQ - return failure status
+                        return TaskStatusResponse(
+                            correlation_id=str(result_correlation_id),
+                            status="failed",
+                            message=f"Task retries failed, moved to DLQ. Reason: {event.failure_reason}",
+                            results=None,
+                            failures=[event.failure_reason],
+                            completed_agents=None,
+                            failed_agents=["broadband"] if "broadband" in event.failure_reason.lower() else ["utilities"],
+                            retry_count=event.failure_count,
+                            dlq_event_id=str(event.event_id)
+                        )
+        
+        # Get final status
+        return await get_task_status(result_correlation_id)
+        
+    except Exception as e:
+        if logger:
+            logger.error(f"Failed to submit sync task: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to submit task: {str(e)}",

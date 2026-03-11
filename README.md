@@ -276,32 +276,46 @@ streamlit run demo/app.py
 
 Open http://localhost:8501 to compare orchestration modes.
 
-## API Endpoints
+## API Reference
 
 ### Core Operations
-- `POST /compare` - Execute all orchestration modes for performance comparison
-- `POST /tasks` - Submit task request
-- `GET /tasks/{correlation_id}` - Retrieve task status and results
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/tasks` | Submit a task request (asynchronous) |
+| POST | `/tasks/sync` | Submit a task and wait for completion (synchronous) |
+| GET | `/tasks/{correlation_id}` | Retrieve task status and results |
+| POST | `/compare` | Run all three orchestration modes against the same request |
 
 ### System Management
-- `GET /health` - System health status
-- `GET /agents` - Active agent registry
-- `GET /dead-letter-queue` - Failed events
-- `POST /dead-letter-queue/{event_id}/retry` - Retry failed event
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/health` | System health status |
+| GET | `/agents` | Active agent registry |
+| GET | `/dead-letter-queue` | View failed events |
+| POST | `/dead-letter-queue/{event_id}/retry` | Replay a failed event |
 
-## Testing
+### Testing & Development
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/policy/test-violation` | Test policy enforcement (should be blocked) |
+| POST | `/policy/test-allowed` | Test allowed peer communication |
+| POST | `/peer-communication/validate-address-sync` | Direct peer communication test |
 
-```bash
-# Run all tests
-uv run pytest
 
-# Run with coverage
-uv run pytest --cov=agents --cov=bus --cov=core
+### Key Differences: `/tasks` vs `/tasks/sync`
 
-# Run specific test suites
-uv run pytest tests/unit/ -v
-uv run pytest tests/integration/ -v
-```
+**`/tasks` (Asynchronous)**:
+- Returns immediately with `{"status": "accepted"}`
+- Task processes in background
+- Use `/tasks/{correlation_id}` to check status later
+- Best for fire-and-forget operations
+
+**`/tasks/sync` (Synchronous)**:
+- Waits for task completion before responding
+- Returns final status including retry failures
+- Shows "Task retries failed, moved to DLQ" for failures
+- Returns HTTP 422 for failed tasks
+- Best for testing error scenarios and immediate feedback
 
 ## Configuration
 

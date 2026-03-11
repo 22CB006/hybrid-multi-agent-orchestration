@@ -42,7 +42,7 @@ class TaskRequest(BaseEvent):
     target_agent: str = Field(..., description="Agent that should handle this task")
     task_type: str = Field(..., description="Type of task to perform")
     payload: dict = Field(..., description="Task-specific parameters")
-    timeout_seconds: int = Field(default=30, description="Maximum execution time")
+    timeout_seconds: float = Field(default=30.0, description="Maximum execution time in seconds")
 
 
 class TaskResponse(BaseEvent):
@@ -107,26 +107,6 @@ class PolicyViolation(BaseEvent):
     violating_agent: str = Field(..., description="Agent that violated policy")
     violation_details: dict = Field(..., description="Additional context")
     action_taken: str = Field(..., description="Enforcement action applied")
-
-    class AddressValidated(BaseEvent):
-        """Address validation result shared between agents.
-
-        This event enables direct peer-to-peer communication:
-        - Utilities Agent validates address and publishes this event
-        - Broadband Agent subscribes and receives validation result directly
-        - No routing through Main Agent required
-        """
-
-        event_type: Literal["address_validated"] = "address_validated"
-        address: str = Field(..., description="Validated address")
-        electricity_available: bool = Field(..., description="Electricity service available")
-        gas_available: bool = Field(..., description="Gas service available")
-        service_area: str = Field(..., description="Service area classification")
-        estimated_connection_days: int = Field(..., description="Days to establish connection")
-        validation_timestamp: datetime = Field(
-            default_factory=lambda: datetime.now(timezone.utc),
-            description="When validation was performed"
-        )
 
 
 
