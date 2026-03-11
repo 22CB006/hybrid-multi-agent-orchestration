@@ -1,177 +1,112 @@
-# Hybrid Multi-Agent Orchestration System
+# Hybrid Multi-Agent Orchestration
 
-A hybrid architecture that addresses performance bottlenecks in centralized multi-agent systems.
+A working prototype that solves the centralised multi-agent bottleneck through a **Hybrid Control/Data Plane architecture** with three live comparison modes.
 
-## Problem & Solution
+---
 
-**Centralized Model Issues:**
-- All agent communication routes through Main Agent (sequential bottleneck)
-- Main Agent CPU at 100% routing messages instead of orchestrating
-- Response time increases linearly with agent count
-- No parallel task execution
+## The Problem
 
-**Hybrid Model Solution:**
-- **Control Plane**: Main Agent monitors via Redis pattern subscriptions
-- **Data Plane**: Agents communicate directly through Redis message bus
-- **Result**: 50% faster response times, 70-85% CPU reduction
-
-## Architecture
+In a centralised multi-agent system, every message routes through the Main Agent:
 
 ```
-┌─────────────────────────────────────────────────┐
-│         MAIN AGENT (Control Plane)             │
-│   Monitoring | Policy | Logging | Orchestration│
-└────────────────────┬────────────────────────────┘
-                     │ observes
-┌────────────────────▼────────────────────────────┐
-│         REDIS MESSAGE BUS (Data Plane)         │
-└────────┬───────────────────────────┬────────────┘
-         │                           │
-    ┌────▼─────┐              ┌─────▼────┐
-    │ Utilities│◄────────────►│Broadband │
-    │  Agent   │   peer comm  │  Agent   │
-    └──────────┘              └──────────┘
+User → Main Agent → Utilities Agent → Main Agent → Broadband Agent → Main Agent → User
 ```
 
-## Implementation Features
+**Consequences:**
+- Main Agent CPU at ~100% routing messages instead of orchestrating
+- Tasks execute sequentially — no parallelism
+- Response time grows linearly with agent count: O(N)
+- Single point of failure for the entire workflow
 
-- **Redis Pub/Sub Message Bus** - Shared communication layer
-- **Direct Agent Communication** - Utilities ↔ Broadband via `agent.broadband.address_validated`
-- **Control Plane Monitoring** - Main agent observes via `agent.*.*` pattern subscriptions
-- **Structured Logging** - Correlation tracking and centralized logging
-- **Failure Recovery** - Dead letter queue with exponential backoff retry
-- **Performance Comparison** - Interactive Streamlit demo
+---
 
-## Performance Results
+## The Solution
 
-| Metric | Centralized | Hybrid | Improvement |
-|--------|-------------|--------|-------------|
-| Response Time | ~3.0s | ~1.5s | 50% faster |
-| Message Hops | 11 | 7-9 | Reduced overhead |
-| Main Agent CPU | 100% | 15-30% | 70-85% reduction |
-| Task Execution | Sequential | Parallel | Concurrent |
-
-## Quick Start
-
-```bash
-# Start Redis
-redis-server
-
-# Start API server
-python run.py
-
-# Launch demo
-streamlit run demo/app.py
-```
-
-Open http://localhost:8501 to compare orchestration modes.
-
-## Key Files
+Separate the **Control Plane** (orchestration, monitoring, policy) from the **Data Plane** (task execution, agent communication):
 
 ```
-├── agents/
-│   ├── main_agent.py           # Control plane orchestrator
-│   ├── utilities_agent.py      # Utilities setup agent
-│   └── broadband_agent.py      # Broadband setup agent
-├── bus/redis_bus.py           # Redis Pub/Sub implementation
-├── core/
-│   ├── dead_letter_queue.py   # Failure handling
-│   └── policy_enforcer.py     # Channel isolation policies
-├── demo/app.py                # Interactive performance demo
-└── api/main.py                # REST API with /compare endpoint
+┌──────────────────────────────────────────────┐
+│         MAIN AGENT (Control Plane)           │
+│  Monitoring · Policy · Logging · Routing     │
+└─────────────────────┬────────────────────────┘
+                      │ observes via agent.*.*
+┌─────────────────────▼────────────────────────┐
+│         REDIS MESSAGE BUS (Data Plane)       │
+└─────────┬────────────────────────┬───────────┘
+          │                        │
+     ┌────▼──────┐           ┌─────▼─────┐
+     │ Utilities │◄─────────►│ Broadband │
+     │   Agent   │ peer comm │   Agent   │
+     └───────────┘           └───────────┘
 ```
 
-## Testing
+The Main Agent publishes tasks **once** to the bus. Agents consume independently and in parallel. The Main Agent **observes** everything but sits in the critical path for nothing.
 
-```bash
-uv run pytest                  # All tests
-uv run pytest tests/unit/      # Unit tests
-uv run pytest tests/integration/ # Integration tests
-```
+---
 
-## Technology Stack
+## Three-Mode Live Comparison
 
-- **Python 3.12** - Core implementation
-- **Redis Pub/Sub** - Message bus
-- **FastAPI** - REST API
-- **Streamlit** - Interactive demo
-- **Pydantic** - Event schemas
+The Streamlit demo runs all three modes against the same request and displays results side by side.
 
-## Author
+| Mode | Architecture | Routing | Execution | Hops | Main Agent Load |
+|------|-------------|---------|-----------|------|-----------------|
+| Mode 1 | Centralised | Static | Sequential | 12 | ~100% |
+| Mode 2 | Hybrid (this project) | Keywords | Parallel via Redis | 7 | ~15% |
+| Mode 3 | Hybrid + LLM | DeepSeek v3 via OpenRouter | Parallel + intelligent routing | 9 | ~25% |
 
-Arya Lakshmi M - [@22CB006](https://github.com/22CB006)
+**Representative demo results** (same request, same machine, same simulated delays):
 
-Total: 4 hops with parallelization = ~1,100ms
-Main Agent CPU: ~10% (monitoring only)
-```
+| Metric | Mode 1 | Mode 2 | Mode 3 |
+|--------|--------|--------|--------|
+| Response time | 5.14s | 3.84s | 9.61s |
+| vs Mode 1 | baseline | **−1.31s (25% faster)** | +4.47s (LLM overhead) |
 
-#### Timing Breakdown
+> Mode 3 is slower due to ~8s OpenRouter API latency — a deliberate demonstration that intelligence has a cost. The mitigation (async caching + parallel fallback) is documented in the architecture review.
 
-| Phase | Centralized | Hybrid | Savings |
-|-------|-------------|--------|---------|
-| Request parsing | 300ms | 300ms | 0ms |
-| Task routing | 700ms (sequential) | 100ms (publish once) | 600ms |
-| Agent execution | 900ms (sequential) | 500ms (parallel) | 400ms |
-| Result aggregation | 300ms | 200ms | 100ms |
-| **Total Latency** | **2,200ms** | **1,100ms** | **50% faster** |
+---
 
-#### Scalability Impact
+## Scalability
 
-As the number of agents grows, the bottleneck becomes exponentially worse:
+Centralised routing grows O(N) with agent count. Hybrid stays nearly O(1):
 
-| Agents | Centralized Hops | Hybrid Hops | Centralized Time | Hybrid Time |
-|--------|------------------|-------------|------------------|-------------|
+| Agents | Centralised Hops | Hybrid Hops | Centralised Time | Hybrid Time |
+|--------|-----------------|-------------|-----------------|-------------|
 | 2 | 4 (sequential) | 4 (parallel) | ~2.2s | ~1.1s |
 | 5 | 10 (sequential) | 7 (parallel) | ~5.0s | ~1.3s |
 | 10 | 20 (sequential) | 12 (parallel) | ~10.0s | ~1.5s |
 | 20 | 40 (sequential) | 22 (parallel) | ~20.0s | ~1.8s |
 
-**Key Insight**: Centralized routing time grows linearly with agent count (O(N)), while hybrid architecture remains nearly constant (O(1)) due to parallel execution.
+---
 
-#### Root Causes of the Bottleneck
+## Quick Start
 
-1. **Sequential Processing**: Main Agent must handle each message one at a time
-2. **Single Point of Contention**: All communication funnels through one process
-3. **CPU Saturation**: Main Agent spends 100% of time routing instead of orchestrating
-4. **No Parallelization**: Agents cannot communicate simultaneously
-5. **Network Round-Trips**: Every message requires 2 hops (to and from Main Agent)
+**Prerequisites:** Python 3.12+, Redis 7.2+, uv
 
-#### Why Hybrid Architecture Solves This
+```bash
+# 1. Clone
+git clone https://github.com/22CB006/hybrid-multi-agent-orchestration.git
+cd hybrid-multi-agent-orchestration
 
-1. **Publish-Subscribe Pattern**: One message reaches all agents simultaneously
-2. **Direct Communication**: Agents publish results directly to bus without routing
-3. **Parallel Execution**: Multiple agents process tasks concurrently
-4. **Reduced Load**: Main Agent only monitors events, doesn't route them
-5. **Constant Time Routing**: O(1) publish operation regardless of agent count
+# 2. Install dependencies
+uv sync
 
-This architectural shift transforms the Main Agent from a bottleneck into a lightweight control plane, enabling true horizontal scalability.
+# 3. Configure environment
+cp .env.example .env
+# Add OPENROUTER_API_KEY to .env for Mode 3
 
-## Architecture
+# 4. Start Redis
+redis-server
 
-```
-┌─────────────────────────────────────────────────┐
-│         MAIN AGENT (Control Plane)             │
-│   Monitoring | Policy | Logging | Orchestration│
-└────────────────────┬────────────────────────────┘
-                     │ observes
-                     │
-┌────────────────────▼────────────────────────────┐
-│         REDIS MESSAGE BUS (Data Plane)         │
-└────────┬───────────────────────────┬────────────┘
-         │                           │
-    ┌────▼─────┐              ┌─────▼────┐
-    │ Utilities│◄────────────►│Broadband │
-    │  Agent   │   peer comm  │  Agent   │
-    └──────────┘              └──────────┘
+# 5. Start API server
+uv run python run.py
+
+# 6. Launch demo (separate terminal)
+streamlit run demo/app.py
 ```
 
-### Components
+Open **http://localhost:8501** to run the three-mode comparison.
 
-**Control Plane**: Main Agent handles orchestration, monitoring, and policy enforcement without participating in data flow.
-
-**Data Plane**: Redis Pub/Sub enables direct agent communication and parallel task execution.
-
-**Agents**: Utilities and Broadband agents communicate directly for address validation while publishing results to shared channels.
+---
 
 ## Project Structure
 
@@ -345,52 +280,32 @@ All events conform to a shared schema:
   "payload": {
     "address": "123 Main St",
     "move_date": "2025-02-15"
-  },
-  "timeout_seconds": 30
+  }
 }
 ```
 
-## Failure Handling
+---
 
-| Scenario | Strategy | Owner |
-|----------|----------|-------|
-| Agent task fails once | Auto-retry (3 attempts, exponential backoff) | Agent |
-| All retries exhausted | Publish to dead-letter queue | Agent |
-| Dead-letter event | Log, escalate, retry with fallback | Main Agent |
-| Agent stops heartbeat | Remove from registry, re-route tasks | Main Agent |
-| Message bus unavailable | Local buffer with TTL, retry on reconnect | Agent |
-| Duplicate event | Idempotency key prevents re-execution | All Agents |
+## Reliability Features
+
+| Scenario | Strategy |
+|----------|----------|
+| Task fails | Auto-retry up to 3 times with exponential backoff (`delay = base × 2^n`) |
+| All retries exhausted | Moved to Dead Letter Queue with 7-day retention |
+| Duplicate event delivered | Idempotency cache (`correlation_id:task_type` key) prevents re-execution |
+| Agent stops heartbeating | Flagged unhealthy after 3 missed checks; excluded from routing |
+| Redis reconnects | Exponential backoff reconnection (5 attempts: 1s → 16s) |
+
+---
 
 ## Policy Enforcement
 
-The system enforces two concrete policies to maintain communication integrity and system stability:
+Two policies are enforced on every publish operation by `core/policy_enforcer.py`:
 
-### Policy 1: Selective Channel Isolation with Peer Communication
+### Policy 1 — Channel Isolation
 
-Prevents agents from directly publishing to other agents' **input channels** (task_request, command, etc.) while allowing **whitelisted peer-to-peer data channels** for efficient data sharing. Main Agent can publish to any channel as the system orchestrator.
+Agents may only publish to their own channels or an explicit peer whitelist. The Main Agent is exempt as the system orchestrator.
 
-**Rules**:
-1. Agents can publish to their own channels: `agent.{source_agent}.{event_type}`
-2. Main Agent can publish to any channel (orchestrator privilege)
-3. Agents can publish to whitelisted peer data channels (e.g., `address_validated`)
-4. Agents CANNOT publish to other agents' input channels (e.g., `task_request`)
-
-**Valid Examples**:
-```
-utilities_agent publishes to: agent.utilities.task_response ✓ (own channel)
-utilities_agent publishes to: agent.broadband.address_validated ✓ (whitelisted peer channel)
-broadband_agent publishes to: agent.broadband.task_response ✓ (own channel)
-main_agent publishes to: agent.utilities.task_request ✓ (orchestrator privilege)
-```
-
-**Invalid Examples**:
-```
-utilities_agent publishes to: agent.broadband.task_request ✗ (input channel blocked)
-broadband_agent publishes to: agent.utilities.command ✗ (input channel blocked)
-utilities_agent publishes to: agent.broadband.custom_data ✗ (not whitelisted)
-```
-
-**Peer Communication Whitelist**:
 ```python
 allowed_peer_channels = {
     "utilities": ["agent.broadband.address_validated"],
@@ -398,81 +313,44 @@ allowed_peer_channels = {
 }
 ```
 
-**Enforcement**:
-- PolicyEnforcer validates channel names on every publish operation
-- Violations trigger a PolicyViolation event logged to monitoring
-- Violating messages are dropped and not delivered
-- Violation history stored in Redis for 7-day audit trail
+| Publish attempt | Allowed? |
+|----------------|----------|
+| `utilities → agent.utilities.task_response` | ✅ own channel |
+| `utilities → agent.broadband.address_validated` | ✅ whitelisted peer |
+| `utilities → agent.broadband.task_request` | ❌ blocked — input channel |
+| `main → agent.utilities.task_request` | ✅ orchestrator privilege |
 
-### Policy 2: Rate Limit Policy
+Violations are dropped, logged, and stored in Redis for a 7-day audit trail.
 
-Prevents event flooding and protects system resources by limiting events per workflow.
+### Policy 2 — Rate Limiting
 
-**Rule**: Maximum 100 events per correlation_id within 60 seconds
+Maximum **100 events per `correlation_id` per 60 seconds**, tracked via a Redis counter with TTL.
 
-**Tracking**:
-- Redis counter per correlation_id with 60-second TTL
-- Counter increments on each event
-- Counter automatically expires after 60 seconds
+---
 
-**Enforcement**:
-- PolicyEnforcer checks rate limit before processing events
-- Events exceeding limit are throttled (delayed or dropped)
-- PolicyViolation event published when threshold exceeded
-- Subsequent events for that correlation_id are rate-limited
+## Environment Variables
 
-**Example Scenario**:
-```
-Workflow A (correlation_id: abc123):
-- Events 1-100: Processed normally ✓
-- Event 101: Throttled, PolicyViolation published ✗
-- After 60 seconds: Counter resets, normal processing resumes ✓
-```
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `REDIS_HOST` | Redis hostname | `localhost` |
+| `REDIS_PORT` | Redis port | `6379` |
+| `OPENROUTER_API_KEY` | Required for Mode 3 LLM routing | — |
+| `LOG_LEVEL` | Logging verbosity | `INFO` |
+| `ENVIRONMENT` | Runtime environment | `development` |
 
-### Policy Violation Response
-
-When a policy violation is detected:
-
-1. **Immediate Action**: Block/throttle the violating operation
-2. **Event Publishing**: Emit PolicyViolation event with details:
-   ```json
-   {
-     "event_type": "POLICY_VIOLATION",
-     "violation_type": "CHANNEL_VIOLATION" | "RATE_LIMIT_EXCEEDED",
-     "violating_agent": "utilities_agent",
-     "correlation_id": "abc123",
-     "violation_details": {
-       "attempted_channel": "agent.broadband.request",
-       "timestamp": "2025-01-15T10:30:00Z"
-     },
-     "action_taken": "MESSAGE_DROPPED"
-   }
-   ```
-3. **Logging**: Structured log entry with full context
-4. **Audit Trail**: Store in Redis for 7 days for investigation
-5. **Monitoring**: Alert operators for repeated violations
-
-### Extension Points
-
-The PolicyEnforcer architecture supports adding new policies without modifying existing code:
-
-- **Authentication Policy**: Validate agent credentials before processing
-- **Schema Version Policy**: Enforce minimum schema versions
-- **Payload Size Policy**: Limit message size to prevent memory issues
-- **Time Window Policy**: Restrict operations to business hours
-- **Dependency Policy**: Enforce task ordering constraints
+---
 
 ## Technology Stack
 
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| Language | Python 3.12 | Core implementation |
-| API Framework | FastAPI | REST API endpoints |
-| Message Bus | Redis Pub/Sub | Event-driven communication |
-| Validation | Pydantic v2 | Type-safe event schemas |
-| LLM | Gemini 1.5 Flash | Natural language input parsing |
-| Testing | pytest + pytest-asyncio | Async test support |
-| Package Manager | uv | Fast dependency management |
+| Component | Technology |
+|-----------|-----------|
+| Language | Python 3.12 |
+| API | FastAPI |
+| Message Bus | Redis Pub/Sub |
+| Schema Validation | Pydantic v2 |
+| LLM Routing (Mode 3) | DeepSeek v3 via OpenRouter |
+| Demo UI | Streamlit |
+| Package Manager | uv |
 
 ## Implementation Notes
 
