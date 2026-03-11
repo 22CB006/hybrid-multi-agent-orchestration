@@ -127,29 +127,15 @@ hybrid-multi-agent-orchestration/
 │   ├── config.py              # Configuration management
 │   ├── agent_registry.py      # Agent tracking and health monitoring
 │   ├── dead_letter_queue.py   # Failed message handling
-│   ├── gemini_parser.py       # Gemini input parser
 │   ├── openrouter_parser.py   # OpenRouter LLM routing
 │   ├── logger.py              # Structured logging
 │   ├── policy_enforcer.py     # Policy validation and enforcement
 │   └── schemas.py             # Pydantic event models
 ├── api/                        # API layer
 │   ├── __init__.py
-│   └── main.py                # FastAPI application with /compare endpoint
+│   └── main.py                # FastAPI application with REST endpoints
 ├── demo/                       # Interactive demo
 │   └── app.py                 # Streamlit performance comparison UI
-├── tests/                      # Test suite
-│   ├── __init__.py
-│   ├── conftest.py            # Pytest fixtures and configuration
-│   ├── unit/                  # Unit tests
-│   │   ├── __init__.py
-│   │   ├── test_agents.py     # Agent unit tests
-│   │   └── test_policy_enforcer.py # Policy validation tests
-│   └── integration/           # Integration tests
-│       ├── __init__.py
-│       ├── test_end_to_end_workflow.py # Full workflow tests
-│       ├── test_peer_to_peer_communication.py # Direct agent communication
-│       ├── test_direct_agent_communication.py # Agent isolation tests
-│       └── test_failure_recovery.py # DLQ and retry logic tests
 ├── .env.example               # Environment variables template
 ├── .gitignore                 # Git ignore rules
 ├── pytest.ini                 # Pytest configuration
