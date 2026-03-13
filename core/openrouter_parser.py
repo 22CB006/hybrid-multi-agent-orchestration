@@ -135,16 +135,45 @@ class OpenRouterParser:
 
         parsed = json.loads(raw_content)
 
-        # Ensure target_agents is always populated
-        target_agents = parsed.get("target_agents", [])
+        # Validate intent is one of allowed values
+        allowed_intents = {"setup_services", "validate_address", "get_quote", "check_availability", "general_inquiry"}
+        intent = parsed.get("intent", "setup_services")
+        if intent not in allowed_intents:
+            self.logger.warning(f"Invalid intent '{intent}' from AI, using default", 
+                              allowed_intents=list(allowed_intents))
+            intent = "setup_services"
+
+        # Validate target_agents contains only known agents
+        allowed_agents = {"utilities", "broadband"}
+        raw_agents = parsed.get("target_agents", [])
+        target_agents = [agent for agent in raw_agents if agent in allowed_agents]
         if not target_agents:
+            self.logger.warning("No valid agents from AI output, using default", 
+                              raw_agents=raw_agents, allowed_agents=list(allowed_agents))
             target_agents = ["utilities", "broadband"]
 
+        # Validate confidence is in valid range
+        raw_confidence = parsed.get("confidence", 0.9)
+        try:
+            confidence = float(raw_confidence)
+            if not (0.0 <= confidence <= 1.0):
+                self.logger.warning(f"Invalid confidence {confidence}, clamping to range")
+                confidence = max(0.0, min(1.0, confidence))
+        except (ValueError, TypeError):
+            self.logger.warning(f"Invalid confidence type {type(raw_confidence)}, using default")
+            confidence = 0.9
+
+        # Validate entities structure
+        entities = parsed.get("entities", {"address": None, "services": []})
+        if not isinstance(entities, dict):
+            self.logger.warning("Invalid entities structure from AI, using default")
+            entities = {"address": None, "services": []}
+
         intent = ParsedIntent(
-            intent=parsed.get("intent", "setup_services"),
-            entities=parsed.get("entities", {"address": None, "services": []}),
+            intent=intent,
+            entities=entities,
             target_agents=target_agents,
-            confidence=float(parsed.get("confidence", 0.9)),
+            confidence=confidence,
         )
 
         self.logger.info(

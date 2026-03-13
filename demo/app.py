@@ -34,6 +34,21 @@ st.markdown("""
 .hop-request b, .hop-response b, .hop-peer b { color: inherit !important; }
 .hop-request i, .hop-response i, .hop-peer i { opacity: 0.85; }
 .summary-box  { background: #1a1f2e !important; border: 1px solid #334155; border-radius: 8px; padding: 1rem; margin-top: 1rem; color: #e2e8f0 !important; }
+/* Fix metric text truncation and improve readability */
+[data-testid="metric-container"] {
+    min-width: 120px !important;
+}
+[data-testid="metric-container"] [data-testid="metric-value"] {
+    white-space: nowrap !important;
+    overflow: visible !important;
+    text-overflow: unset !important;
+    font-size: 0.85rem !important;
+    line-height: 1.2 !important;
+}
+[data-testid="metric-container"] [data-testid="metric-label"] {
+    font-size: 0.8rem !important;
+    white-space: nowrap !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -137,7 +152,7 @@ if run_btn:
     st.plotly_chart(fig, use_container_width=True)
 
     # ── Key metrics ───────────────────────────────────────────────────────────
-    mc1, mc2, mc3, mc4, mc5 = st.columns(5)
+    mc1, mc2, mc3, mc4, mc5 = st.columns([1, 1, 1, 1, 1.5])  # Make last column wider
     with mc1:
         st.metric("Mode 1", f"{m1['total_time']:.2f}s", help=f"Sequential, no bus • {m1['hop_count']} hops")
     with mc2:
@@ -156,13 +171,9 @@ if run_btn:
         fastest_mode = "Mode 1" if m1["total_time"] <= min(m2["total_time"], m3["total_time"]) else ("Mode 2" if m2["total_time"] <= m3["total_time"] else "Mode 3")
         st.metric("Fastest Mode", fastest_mode, help="Mode with lowest response time")
     with mc5:
-        # Calculate Main Agent workload based on mode
-        mode1_load = "100%"
-        mode2_load = "~15%" 
-        mode3_load = "~25%"
-        st.metric("Main Agent Load", 
-                 f"M1: {mode1_load} | M2: {mode2_load} | M3: {mode3_load}",
-                 help="Mode 1: Handles all messages • Mode 2: Only monitoring • Mode 3: Routing + monitoring")
+        st.metric("Agent Load", 
+                 "100% | 15% | 25%",
+                 help="Main Agent CPU load: Mode 1: 100% (bottleneck) • Mode 2: ~15% (monitoring) • Mode 3: ~25% (routing + monitoring)")
 
     st.divider()
 
